@@ -1,0 +1,13 @@
+.idea
+node_modules/
+dist/
+.env
+*.log
+coverage/
+
+.claude
+CLAUDE.md
+
+database/
+*.jar
+*.csv
