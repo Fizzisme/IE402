@@ -127,4 +127,6 @@ class AppColors {
   static const Color danger            = Colors.red;
   static const Color warning           = Colors.redAccent;
   static const Color textOnAccent      = Colors.black;
+  static const Color dangerCluster       = Color(0xFFFF6600);
+  static const Color dangerClusterBorder = Color(0xFFCC4400);
 }

@@ -5,12 +5,16 @@ class MapControls extends StatelessWidget {
   final VoidCallback onZoomIn;
   final VoidCallback onZoomOut;
   final VoidCallback onLocate;
+  final VoidCallback onToggleMapTheme;
+  final bool isDarkMap;
 
   const MapControls({
     super.key,
     required this.onZoomIn,
     required this.onZoomOut,
     required this.onLocate,
+    required this.onToggleMapTheme,
+    required this.isDarkMap,
   });
 
   @override
@@ -22,6 +26,14 @@ class MapControls extends StatelessWidget {
         GestureDetector(onTap: onZoomOut, child: _button(Icons.remove)),
         const SizedBox(height: 8),
         GestureDetector(onTap: onLocate, child: _button(Icons.my_location)),
+        const SizedBox(height: 8),
+        GestureDetector(
+          onTap: onToggleMapTheme,
+          child: Tooltip(
+            message: isDarkMap ? 'Đổi sang bản đồ sáng' : 'Đổi sang bản đồ tối',
+            child: _button(isDarkMap ? Icons.light_mode : Icons.dark_mode),
+          ),
+        ),
       ],
     );
   }

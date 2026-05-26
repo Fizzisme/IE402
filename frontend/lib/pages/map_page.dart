@@ -29,6 +29,11 @@ class MapPage extends StatefulWidget {
 }
 
 class _MapPageState extends State<MapPage> {
+  static const String _lightTileUrl =
+      'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+  static const String _darkTileUrl =
+      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+
   final MapController _mapController = MapController();
   final _shelterService = ShelterService();
   final _dangerZoneService = DangerZoneService();
@@ -40,8 +45,12 @@ class _MapPageState extends State<MapPage> {
   List<DangerZone> _dangerZones = [];
   bool _isLoading = true;
   bool _isEmergency = false;
+  bool _isDarkMap = false;
   bool _showBottomCard = true;
   StreamSubscription<bool>? _emergencySub;
+  StreamSubscription<LatLng>? _locationSub;
+
+  String get _tileUrlTemplate => _isDarkMap ? _darkTileUrl : _lightTileUrl;
 
   @override
   void initState() {
@@ -50,11 +59,17 @@ class _MapPageState extends State<MapPage> {
     _emergencySub = _socketService.onEmergencyChange.listen((isEmergency) {
       if (mounted) setState(() => _isEmergency = isEmergency);
     });
+
+    _mapController.mapEventStream
+          .where((e) => e is MapEventMoveEnd)
+          .listen((_) => _fetchDangerZones());
+
     _initLocationAndData();
   }
 
   Future<void> _initLocationAndData() async {
     await _determinePosition();
+    _startLocationTracking();
     await Future.wait([_fetchShelters(), _fetchDangerZones()]);
     await _checkDangerLocation();
     if (mounted) setState(() => _isLoading = false);
@@ -68,6 +83,24 @@ class _MapPageState extends State<MapPage> {
         _mapController.move(pos, 15.0);
       });
     }
+  }
+
+  void _startLocationTracking() {
+    _locationSub?.cancel();
+    _locationSub = _locationService.getPositionStream().listen(
+      (pos) async {
+        if (!mounted) return;
+
+        setState(() => _userLocation = pos);
+        _mapController.move(pos, _mapController.camera.zoom);
+
+        await Future.wait([
+          _fetchShelters(),
+          _checkDangerLocation(),
+        ]);
+      },
+      onError: (error) => debugPrint('Location stream error: $error'),
+    );
   }
 
   Future<void> _fetchShelters() async {
@@ -84,7 +117,13 @@ class _MapPageState extends State<MapPage> {
 
   Future<void> _fetchDangerZones() async {
     try {
-      final result = await _dangerZoneService.fetchAll();
+      final bounds = _mapController.camera.visibleBounds;
+      final result = await _dangerZoneService.fetchByBounds(
+        minLat: bounds.south,
+        minLng: bounds.west,
+        maxLat: bounds.north,
+        maxLng: bounds.east,
+      );
       if (mounted) setState(() => _dangerZones = result);
     } catch (e) {
       debugPrint('Zone Error: $e');
@@ -106,6 +145,7 @@ class _MapPageState extends State<MapPage> {
   @override
   void dispose() {
     _emergencySub?.cancel();
+    _locationSub?.cancel();
     _socketService.dispose();
     super.dispose();
   }
@@ -125,8 +165,8 @@ class _MapPageState extends State<MapPage> {
               ),
               children: [
                 TileLayer(
-                  urlTemplate:
-                      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+                  key: ValueKey(_isDarkMap ? 'dark-map' : 'light-map'),
+                  urlTemplate: _tileUrlTemplate,
                   subdomains: const ['a', 'b', 'c', 'd'],
                   userAgentPackageName: 'com.example.shelter',
                 ),
@@ -135,7 +175,7 @@ class _MapPageState extends State<MapPage> {
                     userLocation: _userLocation,
                     shelter: _shelters.first,
                   ),
-                DangerZoneLayer.build(_dangerZones),
+                ...DangerZoneLayer.build(_dangerZones),
                 MarkerLayer(
                   markers: [
                     UserMarker.build(_userLocation),
@@ -145,43 +185,66 @@ class _MapPageState extends State<MapPage> {
               ],
             ),
             Positioned(
-              top: 15, left: 20, right: 20,
-              child: _isEmergency ? const EmergencyHeader() : const NormalHeader(),
+              top: 15,
+              left: 20,
+              right: 20,
+              child:
+                  _isEmergency ? const EmergencyHeader() : const NormalHeader(),
             ),
             if (!_isEmergency)
               const Positioned(
-                top: 70, left: 20,
+                top: 70,
+                left: 20,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    LegendItem(label: 'Hầm trú ẩn', color: Colors.green, isActive: true),
+                    LegendItem(
+                      label: 'Hầm trú ẩn',
+                      color: Colors.green,
+                      isActive: true,
+                    ),
                     SizedBox(height: 8),
-                    LegendItem(label: 'Vùng nguy hiểm', color: Colors.red, isActive: false),
+                    LegendItem(
+                      label: 'Vùng nguy hiểm',
+                      color: Colors.red,
+                      isActive: false,
+                    ),
                   ],
                 ),
               ),
             Positioned(
-              top: 70, right: 20,
+              top: 70,
+              right: 20,
               child: MapControls(
                 onZoomIn: () => _mapController.move(
-                  _mapController.camera.center, _mapController.camera.zoom + 1),
+                  _mapController.camera.center,
+                  _mapController.camera.zoom + 1,
+                ),
                 onZoomOut: () => _mapController.move(
-                  _mapController.camera.center, _mapController.camera.zoom - 1),
+                  _mapController.camera.center,
+                  _mapController.camera.zoom - 1,
+                ),
                 onLocate: () => _mapController.move(_userLocation, 15),
+                isDarkMap: _isDarkMap,
+                onToggleMapTheme: () =>
+                    setState(() => _isDarkMap = !_isDarkMap),
               ),
             ),
             if (_showBottomCard)
-                Positioned(
-                  bottom: 0, left: 0, right: 0,
-                  child: _isEmergency
-                      ? const EmergencyBottomCard()
-                      : NormalBottomCard(
-                          shelters: _shelters,
-                          isLoading: _isLoading,
-                          userLocation: _userLocation,
-                          onClose: () => setState(() => _showBottomCard = false),
-                        ),
-                ),
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: _isEmergency
+                    ? const EmergencyBottomCard()
+                    : NormalBottomCard(
+                        shelters: _shelters,
+                        isLoading: _isLoading,
+                        userLocation: _userLocation,
+                        onClose: () =>
+                            setState(() => _showBottomCard = false),
+                      ),
+              ),
           ],
         ),
       ),
