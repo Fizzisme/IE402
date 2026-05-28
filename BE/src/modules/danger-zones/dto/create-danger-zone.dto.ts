@@ -27,7 +27,16 @@ export class CreateDangerZoneDto {
 
   @IsNotEmpty()
   @IsString()
-  @IsIn(['armed_conflict', 'flood', 'fire', 'landslide', 'other'])
+  @IsIn([
+    'air_raid_alert',
+    'airstrike',
+    'armed_conflict',
+    'flood',
+    'fire',
+    'landslide',
+    'shelling',
+    'other',
+  ])
   event_type: string;
 
   @IsOptional()

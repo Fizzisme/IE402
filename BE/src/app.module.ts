@@ -9,6 +9,7 @@ import { IncidentModule } from './modules/incident/incident.module';
 import { RouteModule } from './modules/route/route.module';
 import { MapModule } from './modules/map/map.module';
 import { EventsModule } from './modules/events/events.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { EventsModule } from './modules/events/events.module';
     IncidentModule,
     RouteModule,
     MapModule,
+    NotificationsModule,
     EventsModule,
   ],
 })

@@ -20,6 +20,7 @@
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
+        "android.permission.POST_NOTIFICATIONS",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION"
       ],
@@ -33,6 +34,14 @@
         "expo-location",
         {
           "locationWhenInUsePermission": "App needs your location to find nearby shelters."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/android-icon-monochrome.png",
+          "color": "#DC2626",
+          "defaultChannel": "danger-alerts"
         }
       ],
       "@maplibre/maplibre-react-native",

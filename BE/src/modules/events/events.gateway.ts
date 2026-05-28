@@ -9,6 +9,7 @@ import {
 import { Server, Socket } from 'socket.io';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
+import { NotificationsService } from '../notifications/notifications.service';
 
 export interface DangerZoneAlertPayload {
   zoneId: string;
@@ -26,40 +27,63 @@ export class EventsGateway implements OnGatewayDisconnect {
   private readonly clientLocations = new Map<string, { lat: number; lng: number }>();
   private readonly clientDangerStatus = new Map<string, boolean>(); // socketId → đang trong zone?
 
-  constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
+  constructor(
+    @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly notificationsService: NotificationsService,
+  ) {}
 
   handleDisconnect(client: Socket) {
     this.clientLocations.delete(client.id);
     this.clientDangerStatus.delete(client.id);
+    this.notificationsService.removeSocket(client.id);
   }
 
   @SubscribeMessage('register_location')
   async handleRegisterLocation(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { lat: number; lng: number },
+    @MessageBody() data: { lat: number; lng: number; expoPushToken?: string },
   ) {
     if (data?.lat == null || data?.lng == null) return;
 
     const wasInDanger = this.clientDangerStatus.get(client.id) ?? false;
     this.clientLocations.set(client.id, { lat: data.lat, lng: data.lng });
+    this.notificationsService.updateSocketDevice(
+      client.id,
+      data.lat,
+      data.lng,
+      data.expoPushToken,
+    );
 
     try {
-      const [row] = await this.dataSource.query(
-        `SELECT EXISTS(
-          SELECT 1 FROM danger_zones
-          WHERE is_active = TRUE
-            AND (valid_until IS NULL OR valid_until > NOW())
-            AND ST_Contains(geom, ST_SetSRID(ST_MakePoint($1, $2), 4326))
-        ) AS in_danger`,
+      const [zone] = await this.dataSource.query(
+        `SELECT id, name, danger_level, event_type
+         FROM danger_zones
+         WHERE is_active = TRUE
+           AND (valid_until IS NULL OR valid_until > NOW())
+           AND ST_Contains(geom, ST_SetSRID(ST_MakePoint($1, $2), 4326))
+         ORDER BY danger_level DESC
+         LIMIT 1`,
         [data.lng, data.lat],
       );
-      const isInDanger: boolean = row?.in_danger ?? false;
+      const isInDanger = !!zone;
       this.clientDangerStatus.set(client.id, isInDanger);
 
       if (isInDanger && !wasInDanger) {
-        client.emit('entered_danger_zone', {
+        const payload: DangerZoneAlertPayload = {
+          zoneId: zone.id,
+          zoneName: zone.name ?? 'Vùng nguy hiểm',
+          dangerLevel: Number(zone.danger_level ?? 1),
+          eventType: zone.event_type ?? 'other',
           message: 'Cảnh báo: Bạn đang ở vùng nguy hiểm!',
-        });
+        };
+        client.emit('entered_danger_zone', payload);
+        const expoPushToken =
+          data.expoPushToken ?? this.notificationsService.getSocketToken(client.id);
+        void this.notificationsService.sendDangerAlert(
+          expoPushToken ? [expoPushToken] : [],
+          payload,
+          `entered:${zone.id}`,
+        );
       } else if (!isInDanger && wasInDanger) {
         client.emit('exited_danger_zone', {
           message: 'Bạn đã ra khỏi vùng nguy hiểm.',
@@ -74,7 +98,6 @@ export class EventsGateway implements OnGatewayDisconnect {
     payload: DangerZoneAlertPayload,
   ) {
     const entries = [...this.clientLocations.entries()];
-    if (!entries.length) return;
 
     for (const [socketId, { lat, lng }] of entries) {
       try {
@@ -93,12 +116,16 @@ export class EventsGateway implements OnGatewayDisconnect {
         // bỏ qua lỗi từng client, không làm hỏng luồng chính
       }
     }
+
+    void this.notificationsService.notifyDevicesInZoneGeojson(
+      zoneGeojson,
+      payload,
+    );
   }
 
   // Dùng cho bulk import — 1 query/client thay vì 1 query/zone
   async notifyClientsNearRecentZones(source: string) {
     const entries = [...this.clientLocations.entries()];
-    if (!entries.length) return;
 
     for (const [socketId, { lat, lng }] of entries) {
       try {
@@ -124,5 +151,7 @@ export class EventsGateway implements OnGatewayDisconnect {
         }
       } catch (_) {}
     }
+
+    void this.notificationsService.notifyDevicesNearRecentZones(source);
   }
 }

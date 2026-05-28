@@ -16,6 +16,7 @@ export interface SocketHandlers {
 
 export class SocketService {
   private socket: Socket | null = null;
+  private expoPushToken: string | null = null;
 
   connect(h: SocketHandlers) {
     this.socket = io(API_CONFIG.socketUrl, {
@@ -45,8 +46,16 @@ export class SocketService {
     this.socket.connect();
   }
 
+  setExpoPushToken(token: string | null) {
+    this.expoPushToken = token;
+  }
+
   updateLocation(lat: number, lng: number) {
-    this.socket?.emit('register_location', { lat, lng });
+    this.socket?.emit('register_location', {
+      lat,
+      lng,
+      expoPushToken: this.expoPushToken ?? undefined,
+    });
   }
 
   dispose() {

@@ -4,6 +4,10 @@ import { useTheme } from '@/lib/theme-context';
 import { useMapStore } from '@/store/map.store';
 import { SocketService, type DangerZoneAlert } from '@/services/socket.service';
 import { getCurrentPosition, watchPosition } from '@/services/location.service';
+import {
+  registerForDangerPushNotifications,
+  registerPushTokenWithBackend,
+} from '@/services/notification.service';
 import { BottomCard } from '@/components/bottom-card';
 import { DangerAlert } from '@/components/danger-alert';
 import { MapControls } from '@/components/map-controls';
@@ -64,6 +68,7 @@ export default function MapScreen() {
   const mapRef = useRef<MapRef>(null);
   const cameraRef = useRef<any>(null);
   const zoomRef = useRef(12);
+  const pushTokenRef = useRef<string | null>(null);
 
   const [currentAlert, setCurrentAlert] = useState<DangerZoneAlert | null>(null);
 
@@ -88,6 +93,7 @@ export default function MapScreen() {
   useEffect(() => {
     const socket = new SocketService();
     socketRef.current = socket;
+    socket.setExpoPushToken(pushTokenRef.current);
     socket.connect({
       onEmergencyChange: (isEmergency) => {
         const was = useMapStore.getState().isEmergency;
@@ -95,18 +101,39 @@ export default function MapScreen() {
         if (isEmergency && !was) useMapStore.getState().recalcRoute();
       },
       onDangerZoneAlert: (alert) => {
+        const loc = useMapStore.getState().userLocation;
         setCurrentAlert(alert);
         useMapStore.getState().fetchDangerZones(zoomRef.current, {
-          minLat: userLocation[1] - 0.05,
-          minLng: userLocation[0] - 0.05,
-          maxLat: userLocation[1] + 0.05,
-          maxLng: userLocation[0] + 0.05,
+          minLat: loc[1] - 0.05,
+          minLng: loc[0] - 0.05,
+          maxLat: loc[1] + 0.05,
+          maxLng: loc[0] + 0.05,
         });
         useMapStore.getState().checkDanger();
       },
     });
     return () => socket.dispose();
-  }, [userLocation]);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+
+    (async () => {
+      const token = await registerForDangerPushNotifications(
+        useMapStore.getState().userLocation,
+      );
+      if (disposed || !token) return;
+
+      pushTokenRef.current = token;
+      socketRef.current?.setExpoPushToken(token);
+      const [lng, lat] = useMapStore.getState().userLocation;
+      socketRef.current?.updateLocation(lat, lng);
+    })();
+
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   // Debounced viewport fetch — created once, reads latest zoom from ref
   const fetchForBounds = useRef(
@@ -143,6 +170,9 @@ export default function MapScreen() {
       if (pos) {
         st.setUserLocation(pos);
         socketRef.current?.updateLocation(pos[1], pos[0]);
+        if (pushTokenRef.current) {
+          void registerPushTokenWithBackend(pushTokenRef.current, pos);
+        }
         cameraRef.current?.flyTo({ center: pos, zoom: 14, duration: 1000 });
       }
 
