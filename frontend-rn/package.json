@@ -1,0 +1,39 @@
+{
+  "name": "frontend-rn",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "@maplibre/maplibre-react-native": "^11.2.1",
+    "axios": "^1.16.1",
+    "expo": "~56.0.5",
+    "expo-linking": "^56.0.12",
+    "expo-location": "~56.0.14",
+    "expo-router": "~56.2.7",
+    "expo-status-bar": "~56.0.4",
+    "mapcn-rn": "^0.1.1",
+    "nativewind": "^4.2.4",
+    "react": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-gesture-handler": "^3.0.0",
+    "react-native-reanimated": "^4.3.1",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-worklets": "^0.8.0",
+    "socket.io-client": "^4.8.3",
+    "tailwindcss": "^3.4.19",
+    "zustand": "^5.0.13"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web"
+  },
+  "private": true,
+  "devDependencies": {
+    "@types/react": "~19.2.14",
+    "babel-plugin-module-resolver": "^5.0.3",
+    "babel-preset-expo": "^56.0.13",
+    "geojson": "^0.5.0",
+    "typescript": "~6.0.3"
+  }
+}

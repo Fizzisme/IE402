@@ -1,7 +1,5 @@
 import 'dart:typed_data';
-
 import 'package:latlong2/latlong.dart';
-
 class DangerZone {
   final String id;
   final String name;

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://react-native-reusables.dev/schema.json",
+  "rsc": false,
+  "typescript": true,
+  "aliases": {
+    "@/components": "./src/components",
+    "@/lib": "./src/lib"
+  }
+}

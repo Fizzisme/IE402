@@ -8,6 +8,7 @@ import { DangerZonesModule } from './modules/danger-zones/danger-zones.module';
 import { IncidentModule } from './modules/incident/incident.module';
 import { RouteModule } from './modules/route/route.module';
 import { MapModule } from './modules/map/map.module';
+import { EventsModule } from './modules/events/events.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { MapModule } from './modules/map/map.module';
     IncidentModule,
     RouteModule,
     MapModule,
+    EventsModule,
   ],
 })
 export class AppModule {}

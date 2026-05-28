@@ -3,10 +3,14 @@ import { DataSource } from 'typeorm';
 import { CreateDangerZoneDto } from './dto/create-danger-zone.dto';
 import { AcledEventDto } from './dto/import-acled.dto';
 import { UcdpEventDto } from './dto/import-ucdp.dto';
+import { EventsGateway } from '../events/events.gateway';
 
 @Injectable()
 export class DangerZonesService {
-  constructor(private dataSource: DataSource) {}
+  constructor(
+    private dataSource: DataSource,
+    private eventsGateway: EventsGateway,
+  ) {}
 
   private buildPolygonWKT(coordinates: number[][]): string {
     const points = coordinates.map((c) => `${c[0]} ${c[1]}`).join(', ');
@@ -39,7 +43,17 @@ export class DangerZonesService {
         userId ?? null,
       ],
     );
-    return rows[0];
+    const zone = rows[0];
+    if (zone?.geojson) {
+      void this.eventsGateway.notifyClientsInZone(zone.geojson, {
+        zoneId: zone.id,
+        zoneName: zone.name ?? 'Vùng nguy hiểm',
+        dangerLevel: zone.danger_level,
+        eventType: zone.event_type,
+        message: 'Cảnh báo: Vùng nguy hiểm mới xuất hiện gần bạn!',
+      });
+    }
+    return zone;
   }
 
   async findAll(opts: {
@@ -72,11 +86,7 @@ export class DangerZonesService {
       params,
     );
 
-    const [{ total }] = await this.dataSource.query(
-      `SELECT COUNT(*)::int AS total FROM danger_zones WHERE is_active = TRUE`,
-    );
-
-    return { data: rows, total, limit, offset };
+    return { data: rows, limit, offset };
   }
 
   async checkLocation(lat: number, lng: number) {
@@ -187,6 +197,9 @@ export class DangerZonesService {
     }
 
     const { updated } = await this.refreshPenalties();
+    if (imported > 0) {
+      void this.eventsGateway.notifyClientsNearRecentZones('acled');
+    }
     return { imported, skipped, penalties_updated: updated };
   }
 
@@ -242,6 +255,9 @@ export class DangerZonesService {
     }
 
     const { updated } = await this.refreshPenalties();
+    if (imported > 0) {
+      void this.eventsGateway.notifyClientsNearRecentZones('ucdp');
+    }
     return { imported, skipped, penalties_updated: updated };
   }
 

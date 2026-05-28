@@ -2,12 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 import '../../core/theme/app_colors.dart';
 import '../../models/shelter.dart';
+import '../../models/route_result.dart';
 import 'shelter_item.dart';
 
 class NormalBottomCard extends StatelessWidget {
   final List<Shelter> shelters;
   final bool isLoading;
   final LatLng userLocation;
+  final RouteResult? routeResult;
+  final Shelter? selectedShelter;
+  final void Function(Shelter)? onShelterTap;
   final VoidCallback? onClose;
 
   const NormalBottomCard({
@@ -15,15 +19,19 @@ class NormalBottomCard extends StatelessWidget {
     required this.shelters,
     required this.isLoading,
     required this.userLocation,
+    this.routeResult,
+    this.selectedShelter,
+    this.onShelterTap,
     this.onClose,
   });
 
   @override
   Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
     return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.bottomSheetBg,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      decoration: BoxDecoration(
+        color: colors.bottomSheetBg,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -34,7 +42,7 @@ class NormalBottomCard extends StatelessWidget {
             height: 3,
             margin: const EdgeInsets.only(top: 10),
             decoration: BoxDecoration(
-              color: AppColors.dragHandle,
+              color: colors.dragHandle,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
@@ -45,10 +53,10 @@ class NormalBottomCard extends StatelessWidget {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
+                Text(
                   'HẦM TRÚ ẨN GẦN NHẤT',
                   style: TextStyle(
-                    color: AppColors.textTertiary,
+                    color: colors.textTertiary,
                     fontSize: 10,
                     letterSpacing: 0.5,
                   ),
@@ -59,13 +67,13 @@ class NormalBottomCard extends StatelessWidget {
                     width: 22,
                     height: 22,
                     decoration: BoxDecoration(
-                      color: AppColors.iconBoxBg,
+                      color: colors.iconBoxBg,
                       borderRadius: BorderRadius.circular(11),
                     ),
-                    child: const Icon(
+                    child: Icon(
                       Icons.close,
                       size: 14,
-                      color: AppColors.textTertiary,
+                      color: colors.textTertiary,
                     ),
                   ),
                 ),
@@ -73,23 +81,23 @@ class NormalBottomCard extends StatelessWidget {
             ),
           ),
 
-          const Divider(height: 0.5, color: AppColors.divider),
+          Divider(height: 0.5, color: colors.divider),
 
           // Content
           if (isLoading)
-            const Padding(
-              padding: EdgeInsets.all(24),
+            Padding(
+              padding: const EdgeInsets.all(24),
               child: CircularProgressIndicator(
-                color: AppColors.shelterAccent,
+                color: colors.shelterAccent,
                 strokeWidth: 2,
               ),
             )
           else if (shelters.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(24),
+            Padding(
+              padding: const EdgeInsets.all(24),
               child: Text(
                 'Không tìm thấy hầm trú ẩn gần đây',
-                style: TextStyle(color: AppColors.textTertiary, fontSize: 13),
+                style: TextStyle(color: colors.textTertiary, fontSize: 13),
               ),
             )
           else
@@ -97,7 +105,16 @@ class NormalBottomCard extends StatelessWidget {
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               itemCount: shelters.length,
-              itemBuilder: (_, i) => ShelterItem(shelter: shelters[i]),
+              itemBuilder: (_, i) {
+                final isSelected = selectedShelter?.id == shelters[i].id;
+                return ShelterItem(
+                  shelter: shelters[i],
+                  isSelected: isSelected,
+                  routeDistanceM: isSelected ? routeResult?.totalDistanceM.toDouble() : null,
+                  routeTimeMin: isSelected ? routeResult?.estimatedTimeMin : null,
+                  onTap: () => onShelterTap?.call(shelters[i]),
+                );
+              },
             ),
 
           const SizedBox(height: 8),

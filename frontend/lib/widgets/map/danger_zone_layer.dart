@@ -7,11 +7,13 @@ import '../../models/danger_zone.dart';
 class DangerZoneLayer {
   DangerZoneLayer._();
 
+  static const Color _clusterFill = AppColors.dangerCluster;
+  static const Color _clusterBorder = AppColors.dangerClusterBorder;
+
   static List<Widget> build(List<DangerZone> zones) {
     final polygons = zones.expand((zone) {
-      final color = zone.isCluster ? AppColors.dangerCluster : AppColors.danger;
-      final borderColor =
-          zone.isCluster ? AppColors.dangerClusterBorder : AppColors.danger;
+      final color = zone.isCluster ? _clusterFill : AppColors.danger;
+      final borderColor = zone.isCluster ? _clusterBorder : AppColors.danger;
 
       return zone.polygons
           .where((points) => points.length >= 3)
@@ -26,9 +28,8 @@ class DangerZoneLayer {
     final circles = zones
         .where((zone) => !zone.hasPolygon && zone.hasCircle)
         .map((zone) {
-      final color = zone.isCluster ? AppColors.dangerCluster : AppColors.danger;
-      final borderColor =
-          zone.isCluster ? AppColors.dangerClusterBorder : AppColors.danger;
+      final color = zone.isCluster ? _clusterFill : AppColors.danger;
+      final borderColor = zone.isCluster ? _clusterBorder : AppColors.danger;
 
       return CircleMarker(
         point: LatLng(zone.lat, zone.lng),

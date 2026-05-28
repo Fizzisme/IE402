@@ -1,23 +1,21 @@
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import '../../core/theme/app_colors.dart';
-import '../../models/shelter.dart';
 
 class RoutePolyline {
   RoutePolyline._();
 
-  static PolylineLayer build({
-    required LatLng userLocation,
-    required Shelter shelter,
-  }) {
+  static PolylineLayer build(List<List<LatLng>> segments) {
     return PolylineLayer(
-      polylines: [
-        Polyline(
-          points: [userLocation, LatLng(shelter.lat, shelter.lng)],
-          color: AppColors.userMarker,
-          strokeWidth: 4,
-        ),
-      ],
+      polylines: segments
+          .map((seg) => Polyline(
+                points: seg,
+                color: AppColors.userMarker,
+                strokeWidth: 4,
+                borderColor: AppColors.userMarkerBorder,
+                borderStrokeWidth: 1.5,
+              ))
+          .toList(),
     );
   }
 }
