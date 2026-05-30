@@ -1,0 +1,20 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vigil-be
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      # firebase-service-account.json phải có trên VPS (không commit vào git)
+      - ./firebase-service-account.json:/app/firebase-service-account.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/v1/shelters"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
