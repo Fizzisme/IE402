@@ -1,4 +1,4 @@
 export const API_CONFIG = {
-  baseUrl: 'http://10.0.2.2:3000/api/v1',
-  socketUrl: 'http://10.0.2.2:3000',
+  baseUrl: 'http://62.72.46.7:3000/api/v1',
+  socketUrl: 'http://62.72.46.7:3000',
 } as const;

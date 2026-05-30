@@ -18,7 +18,7 @@ let lastLng = 0;
 let cachedFcmToken: string | null = null;
 
 function apiBase() {
-  return process.env.EXPO_PUBLIC_API_URL ?? 'http://10.0.2.2:3000';
+  return process.env.EXPO_PUBLIC_API_URL ?? 'http://62.72.46.7:3000';
 }
 
 // Báo vị trí + FCM token về BE để Cron server-side phát hiện zone và đẩy FCM
@@ -46,7 +46,7 @@ async function checkDangerAtLocation(lat: number, lng: number) {
   try {
     // Gọi thẳng API, không qua apiClient (tránh circular import trong task)
     // Dùng biến môi trường nếu có, fallback về emulator address
-    const base = process.env.EXPO_PUBLIC_API_URL ?? 'http://10.0.2.2:3000';
+    const base = process.env.EXPO_PUBLIC_API_URL ?? 'http://62.72.46.7:3000';
     const res = await fetch(`${base}/api/v1/danger-zones/check?lat=${lat}&lng=${lng}`);
     if (!res.ok) return;
     const json = await res.json();
