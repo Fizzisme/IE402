@@ -2,10 +2,17 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { DataSource } from 'typeorm';
 import { CreateShelterDto } from './dto/create-shelter.dto';
 import { FindNearestDto } from './dto/find-nearest.dto';
+import { EventsGateway } from '../events/events.gateway';
+
+// Bán kính tối đa (mét) cho phép check-in tính từ shelter
+const CHECKIN_RADIUS_M = 100;
 
 @Injectable()
 export class ShelterService {
-  constructor(private dataSource: DataSource) {}
+  constructor(
+    private dataSource: DataSource,
+    private readonly eventsGateway: EventsGateway,
+  ) {}
 
   async create(dto: CreateShelterDto) {
     const rows = await this.dataSource.query(
@@ -84,13 +91,29 @@ export class ShelterService {
     return rows;
   }
 
-  async checkin(shelterId: string, userId: string) {
+  async checkin(shelterId: string, userId: string, lat: number, lng: number) {
     const shelter = await this.findById(shelterId);
     if (shelter.status === 'full') {
       throw new BadRequestException('Shelter is full');
     }
     if (shelter.status === 'closed') {
       throw new BadRequestException('Shelter is closed');
+    }
+
+    // Chỉ cho check-in khi user đang ở trong bán kính shelter
+    const [near] = await this.dataSource.query(
+      `SELECT ST_DWithin(
+         geom::geography,
+         ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+         $3
+       ) AS within
+       FROM shelters WHERE id = $4`,
+      [lng, lat, CHECKIN_RADIUS_M, shelterId],
+    );
+    if (!near?.within) {
+      throw new BadRequestException(
+        `You must be within ${CHECKIN_RADIUS_M}m of the shelter to check in`,
+      );
     }
 
     // Không cho checkin 2 lần cùng 1 shelter
@@ -111,6 +134,7 @@ export class ShelterService {
     );
 
     const updated = await this.findById(shelterId);
+    this.broadcastOccupancy(updated);
     return { checkin: rows[0], shelter: updated };
   }
 
@@ -127,7 +151,30 @@ export class ShelterService {
     }
 
     const updated = await this.findById(shelterId);
+    this.broadcastOccupancy(updated);
     return { checkin: rows[0], shelter: updated };
+  }
+
+  // Check-in đang hoạt động của user (để FE khôi phục khi mở lại app)
+  async getActiveCheckin(userId: string) {
+    const rows = await this.dataSource.query(
+      `SELECT id, shelter_id, checked_in_at
+       FROM shelter_checkins
+       WHERE user_id = $1 AND checked_out_at IS NULL
+       ORDER BY checked_in_at DESC
+       LIMIT 1`,
+      [userId],
+    );
+    return rows[0] ?? null;
+  }
+
+  private broadcastOccupancy(shelter: any) {
+    this.eventsGateway.broadcastShelterUpdate({
+      shelterId: shelter.id,
+      currentOccupancy: Number(shelter.current_occupancy),
+      capacity: Number(shelter.capacity),
+      status: shelter.status,
+    });
   }
 
   async updateStatus(id: string, status: string) {

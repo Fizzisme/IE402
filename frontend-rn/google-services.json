@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "137456277849",
+    "project_id": "vigil-95de2",
+    "storage_bucket": "vigil-95de2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:137456277849:android:1560f98b9fbf4e41c9d448",
+        "android_client_info": {
+          "package_name": "com.anonymous.frontendrn"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBGfXhjpypbRT35G-1qOUNSuKj76yHc9Bo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

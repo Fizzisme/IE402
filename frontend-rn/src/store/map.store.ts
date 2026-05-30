@@ -4,15 +4,24 @@ import type { Shelter } from '@/types/shelter';
 import type { DangerZone } from '@/types/danger-zone';
 import { hasPolygon } from '@/types/danger-zone';
 import type { RouteResult } from '@/types/route-result';
-import { fetchNearestShelters } from '@/services/shelter.service';
+import {
+  fetchNearestShelters,
+  checkinShelter,
+  checkoutShelter,
+  fetchMyActiveCheckin,
+} from '@/services/shelter.service';
+import type { ShelterOccupancyUpdate } from '@/services/socket.service';
 import {
   fetchDangerZonesByBounds,
   checkLocationDanger,
 } from '@/services/danger-zone.service';
 import { calculateRoute } from '@/services/route.service';
-import { haversineMeters } from '@/lib/geo';
+import { haversineMeters, distanceToSegments } from '@/lib/geo';
 
 const DEFAULT_LOCATION: LngLat = [106.8031, 10.8700];
+// Coi là đã đến shelter khi cách ≤ 50m; đi chệch > 50m khỏi tuyến thì fetch lại
+const ARRIVAL_RADIUS_M = 50;
+const OFF_ROUTE_M = 50;
 
 interface Bounds {
   minLat: number;
@@ -32,6 +41,9 @@ interface MapState {
   isRouteLoading: boolean;
   isEmergency: boolean;
   showBottomCard: boolean;
+  hasArrived: boolean;
+  activeCheckinShelterId: string | null;
+  isCheckinLoading: boolean;
 
   setUserLocation: (p: LngLat) => void;
   setEmergency: (v: boolean) => void;
@@ -43,6 +55,11 @@ interface MapState {
   checkDanger: () => Promise<void>;
   recalcRoute: () => Promise<void>;
   maybeRecalcRoute: (p: LngLat) => void;
+
+  applyShelterUpdate: (u: ShelterOccupancyUpdate) => void;
+  loadActiveCheckin: () => Promise<void>;
+  checkin: (shelterId: string) => Promise<boolean>;
+  checkout: () => Promise<boolean>;
 }
 
 let shelterAbort: AbortController | null = null;
@@ -67,13 +84,23 @@ export const useMapStore = create<MapState>((set, get) => ({
   isRouteLoading: false,
   isEmergency: false,
   showBottomCard: true,
+  hasArrived: false,
+  activeCheckinShelterId: null,
+  isCheckinLoading: false,
 
   setUserLocation: (p) => set({ userLocation: p }),
   setEmergency: (v) => set({ isEmergency: v }),
   setShowBottomCard: (v) => set({ showBottomCard: v }),
 
   selectShelter: (s) => {
-    set({ selectedShelter: s });
+    const { selectedShelter, hasArrived } = get();
+    // Bấm lại đúng shelter đã đến → không tính lại đường
+    if (hasArrived && selectedShelter?.id === s.id) {
+      set({ selectedShelter: s });
+      return;
+    }
+    // Shelter khác → đích mới, tính đường tới đó
+    set({ selectedShelter: s, hasArrived: false });
     get().recalcRoute();
   },
 
@@ -142,7 +169,26 @@ export const useMapStore = create<MapState>((set, get) => ({
   },
 
   recalcRoute: async () => {
-    const { userLocation, selectedShelter, shelters } = get();
+    const { userLocation, selectedShelter, shelters, activeCheckinShelterId } =
+      get();
+
+    // Nếu đã ở ngay shelter (≤50m) hoặc đã check-in → coi như đến nơi,
+    // không định tuyến (start trùng đích sẽ làm BE trả 400).
+    const target = selectedShelter ?? (shelters.length ? shelters[0] : null);
+    if (target) {
+      const checkedInHere = activeCheckinShelterId === target.id;
+      const distM = haversineMeters(userLocation, [target.lng, target.lat]);
+      if (checkedInHere || distM <= ARRIVAL_RADIUS_M) {
+        set({
+          selectedShelter: target,
+          hasArrived: true,
+          routeResult: null,
+          isRouteLoading: false,
+        });
+        return;
+      }
+    }
+
     set({ lastRouteCalcLocation: userLocation, isRouteLoading: true });
     const [lng, lat] = userLocation;
     try {
@@ -160,14 +206,130 @@ export const useMapStore = create<MapState>((set, get) => ({
         isRouteLoading: false,
       });
     } catch (e) {
+      // Start trùng shelter (đang đứng ngay nơi trú ẩn) → BE trả 400.
+      // Nếu thực sự đang sát 1 shelter thì coi như đã đến nơi thay vì báo lỗi.
+      const { userLocation: u, shelters: sh } = get();
+      const near = sh.find(
+        (s) => haversineMeters(u, [s.lng, s.lat]) <= ARRIVAL_RADIUS_M,
+      );
+      if (near) {
+        set({
+          selectedShelter: near,
+          hasArrived: true,
+          routeResult: null,
+          isRouteLoading: false,
+        });
+        return;
+      }
       set({ isRouteLoading: false });
       console.log('Route Error:', e);
     }
   },
 
   maybeRecalcRoute: (newPos) => {
-    const last = get().lastRouteCalcLocation;
-    if (!last) return;
-    if (haversineMeters(last, newPos) > 50) get().recalcRoute();
+    const {
+      selectedShelter,
+      routeResult,
+      activeCheckinShelterId,
+      hasArrived,
+      lastRouteCalcLocation,
+      isRouteLoading,
+    } = get();
+
+    // Đã có đích: kiểm tra đã đến nơi (≤50m HOẶC đã check-in) → dừng hẳn routing
+    if (selectedShelter) {
+      const checkedInHere = activeCheckinShelterId === selectedShelter.id;
+      const shelterLoc: LngLat = [selectedShelter.lng, selectedShelter.lat];
+      const arrived =
+        checkedInHere || haversineMeters(newPos, shelterLoc) <= ARRIVAL_RADIUS_M;
+      if (arrived) {
+        if (!hasArrived) set({ hasArrived: true });
+        return;
+      }
+      if (hasArrived) set({ hasArrived: false });
+    }
+
+    // Đang tính dở → bỏ qua (tránh gọi chồng nhau, quá tải DB)
+    if (isRouteLoading) return;
+
+    // Chỉ xét tính lại khi đã DI CHUYỂN > 50m kể từ lần tính trước.
+    // Tránh recalc dồn dập mỗi tick GPS lúc đứng yên (gây nhấp nháy bảng + quá tải DB).
+    const movedM = lastRouteCalcLocation
+      ? haversineMeters(lastRouteCalcLocation, newPos)
+      : Infinity;
+    if (movedM < OFF_ROUTE_M) return;
+
+    // Chưa có tuyến → tính (BE tự chọn shelter gần nhất nếu chưa chọn).
+    // Có tuyến rồi: chỉ fetch lại khi đi CHỆCH khỏi tuyến; phần đã đi cắt mượt ở client.
+    if (!routeResult || routeResult.segments.length === 0) {
+      get().recalcRoute();
+      return;
+    }
+    if (distanceToSegments(newPos, routeResult.segments) > OFF_ROUTE_M) {
+      get().recalcRoute();
+    }
+  },
+
+  // Patch occupancy realtime khi 1 client khác check-in/checkout
+  applyShelterUpdate: (u) => {
+    const patch = (s: Shelter): Shelter =>
+      s.id === u.shelterId
+        ? { ...s, currentOccupancy: u.currentOccupancy, capacity: u.capacity }
+        : s;
+    const { shelters, selectedShelter } = get();
+    set({
+      shelters: shelters.map(patch),
+      selectedShelter: selectedShelter ? patch(selectedShelter) : null,
+    });
+  },
+
+  loadActiveCheckin: async () => {
+    try {
+      const id = await fetchMyActiveCheckin();
+      set({ activeCheckinShelterId: id });
+    } catch (e) {
+      console.log('Load active checkin error:', e);
+    }
+  },
+
+  checkin: async (shelterId) => {
+    const [lng, lat] = get().userLocation;
+    set({ isCheckinLoading: true });
+    try {
+      const updated = await checkinShelter(shelterId, lat, lng);
+      get().applyShelterUpdate({
+        shelterId,
+        currentOccupancy: updated.currentOccupancy,
+        capacity: updated.capacity,
+        status: 'available',
+      });
+      set({ activeCheckinShelterId: shelterId, isCheckinLoading: false });
+      return true;
+    } catch (e) {
+      set({ isCheckinLoading: false });
+      console.log('Checkin error:', e);
+      return false;
+    }
+  },
+
+  checkout: async () => {
+    const shelterId = get().activeCheckinShelterId;
+    if (!shelterId) return false;
+    set({ isCheckinLoading: true });
+    try {
+      const updated = await checkoutShelter(shelterId);
+      get().applyShelterUpdate({
+        shelterId,
+        currentOccupancy: updated.currentOccupancy,
+        capacity: updated.capacity,
+        status: 'available',
+      });
+      set({ activeCheckinShelterId: null, isCheckinLoading: false });
+      return true;
+    } catch (e) {
+      set({ isCheckinLoading: false });
+      console.log('Checkout error:', e);
+      return false;
+    }
   },
 }));

@@ -1,47 +1,52 @@
 {
   "expo": {
-    "name": "frontend-rn",
-    "slug": "frontend-rn",
+    "name": "Vigil",
+    "slug": "vigil",
     "version": "1.0.0",
-    "scheme": "frontendrn",
+    "scheme": "vigil",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/Vigil.png",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "foregroundImage": "./assets/Vigil.png",
+        "backgroundColor": "#FFFFFF"
       },
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION"
       ],
       "package": "com.anonymous.frontendrn"
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/Vigil.png"
     },
     "plugins": [
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "App needs your location to find nearby shelters."
+          "locationWhenInUsePermission": "App needs your location to find nearby shelters.",
+          "locationAlwaysAndWhenInUsePermission": "Vigil needs background location to alert you when entering danger zones.",
+          "locationAlwaysPermission": "Vigil needs background location to alert you when entering danger zones.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
         }
       ],
       [
         "expo-notifications",
         {
-          "icon": "./assets/android-icon-monochrome.png",
+          "icon": "./assets/Vigil.png",
           "color": "#DC2626",
-          "defaultChannel": "danger-alerts"
+          "defaultChannel": "danger-alerts",
+          "sounds": ["./assets/alert.mp3"]
         }
       ],
       "@maplibre/maplibre-react-native",

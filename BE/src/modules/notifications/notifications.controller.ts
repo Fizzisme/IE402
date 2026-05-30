@@ -7,10 +7,10 @@ export class NotificationsController {
   constructor(private readonly notificationsService: NotificationsService) {}
 
   @Post('push-token')
-  registerPushToken(@Body() dto: RegisterPushTokenDto) {
+  async registerPushToken(@Body() dto: RegisterPushTokenDto) {
     return {
       message: 'Push token registered',
-      data: this.notificationsService.registerToken(dto),
+      data: await this.notificationsService.registerToken(dto),
     };
   }
 }

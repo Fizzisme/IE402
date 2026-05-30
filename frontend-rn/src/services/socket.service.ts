@@ -9,9 +9,17 @@ export interface DangerZoneAlert {
   message: string;
 }
 
+export interface ShelterOccupancyUpdate {
+  shelterId: string;
+  currentOccupancy: number;
+  capacity: number;
+  status: string;
+}
+
 export interface SocketHandlers {
   onEmergencyChange: (isEmergency: boolean) => void;
   onDangerZoneAlert: (alert: DangerZoneAlert) => void;
+  onShelterUpdate: (update: ShelterOccupancyUpdate) => void;
 }
 
 export class SocketService {
@@ -28,7 +36,18 @@ export class SocketService {
     });
     this.socket.on('air_raid_alert', () => h.onEmergencyChange(true));
     this.socket.on('safe_alert', () => h.onEmergencyChange(false));
-    this.socket.on('entered_danger_zone', () => h.onEmergencyChange(true));
+    this.socket.on('entered_danger_zone', (data: any) => {
+      h.onEmergencyChange(true);
+      try {
+        h.onDangerZoneAlert({
+          zoneId: String(data?.zoneId ?? ''),
+          zoneName: String(data?.zoneName ?? 'Vùng nguy hiểm'),
+          dangerLevel: Number(data?.dangerLevel ?? 1),
+          eventType: String(data?.eventType ?? ''),
+          message: String(data?.message ?? 'Cảnh báo: Bạn đang ở vùng nguy hiểm!'),
+        });
+      } catch { /* ignore */ }
+    });
     this.socket.on('exited_danger_zone', () => h.onEmergencyChange(false));
     this.socket.on('danger_zone_alert', (data: any) => {
       try {
@@ -38,6 +57,18 @@ export class SocketService {
           dangerLevel: Number(data?.dangerLevel ?? 1),
           eventType: String(data?.eventType ?? ''),
           message: String(data?.message ?? 'Cảnh báo vùng nguy hiểm!'),
+        });
+      } catch {
+        /* ignore */
+      }
+    });
+    this.socket.on('shelter_occupancy_changed', (data: any) => {
+      try {
+        h.onShelterUpdate({
+          shelterId: String(data?.shelterId ?? ''),
+          currentOccupancy: Number(data?.currentOccupancy ?? 0),
+          capacity: Number(data?.capacity ?? 0),
+          status: String(data?.status ?? 'available'),
         });
       } catch {
         /* ignore */

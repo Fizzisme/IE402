@@ -11,3 +11,5 @@ CLAUDE.md
 database/
 *.jar
 *.csv
+firebase-service-account.json
+*-adminsdk-*.json

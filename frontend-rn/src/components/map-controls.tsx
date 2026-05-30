@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, TouchableOpacity, Text, StyleSheet } from 'react-native';
+import { View, TouchableOpacity, StyleSheet } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 interface MapControlsProps {
   onZoomIn: () => void;
@@ -10,20 +11,18 @@ interface MapControlsProps {
 export function MapControls({ onZoomIn, onZoomOut, onMyLocation }: MapControlsProps) {
   return (
     <View style={styles.container}>
-      {/* Zoom controls */}
       <View style={styles.zoomGroup}>
         <TouchableOpacity style={styles.btn} onPress={onZoomIn} activeOpacity={0.7}>
-          <Text style={styles.btnText}>+</Text>
+          <Ionicons name="add" size={22} color="#374151" />
         </TouchableOpacity>
         <View style={styles.divider} />
         <TouchableOpacity style={styles.btn} onPress={onZoomOut} activeOpacity={0.7}>
-          <Text style={styles.btnText}>−</Text>
+          <Ionicons name="remove" size={22} color="#374151" />
         </TouchableOpacity>
       </View>
 
-      {/* My location */}
       <TouchableOpacity style={[styles.btn, styles.locationBtn]} onPress={onMyLocation} activeOpacity={0.7}>
-        <Text style={styles.locationIcon}>◎</Text>
+        <Ionicons name="navigate-outline" size={20} color="#3B82F6" />
       </TouchableOpacity>
     </View>
   );
@@ -33,7 +32,7 @@ const styles = StyleSheet.create({
   container: {
     position: 'absolute',
     right: 12,
-    bottom: 16,
+    top: 60,
     gap: 8,
     alignItems: 'center',
   },
@@ -54,12 +53,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#FFFFFF',
   },
-  btnText: {
-    fontSize: 22,
-    color: '#374151',
-    lineHeight: 26,
-    fontWeight: '400',
-  },
   divider: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: '#E5E7EB',
@@ -72,9 +65,5 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.15,
     shadowRadius: 4,
     shadowOffset: { width: 0, height: 2 },
-  },
-  locationIcon: {
-    fontSize: 20,
-    color: '#3B82F6',
   },
 });

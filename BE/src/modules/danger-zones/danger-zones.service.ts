@@ -64,26 +64,67 @@ export class DangerZonesService {
     const limit  = Math.min(opts.limit  ?? 100, 500);
     const offset = opts.offset ?? 0;
 
-    let bboxClause = '';
-    const params: unknown[] = [limit, offset];
-
-    if (opts.bbox) {
-      const { minLng, minLat, maxLng, maxLat } = opts.bbox;
-      bboxClause = `AND geom && ST_MakeEnvelope($3, $4, $5, $6, 4326)`;
-      params.push(minLng, minLat, maxLng, maxLat);
+    // Without bbox → raw listing (admin panel / no clustering)
+    if (!opts.bbox) {
+      const rows = await this.dataSource.query(
+        `SELECT id, name, danger_level, event_type, description, data_source,
+                valid_from, valid_until, created_at,
+                ST_AsGeoJSON(ST_Simplify(geom, 0.001))::json AS geojson
+         FROM danger_zones
+         WHERE is_active = TRUE
+           AND data_source <> 'simulation'
+           AND (valid_until IS NULL OR valid_until > NOW())
+         ORDER BY danger_level DESC, created_at DESC
+         LIMIT $1 OFFSET $2`,
+        [limit, offset],
+      );
+      return { data: rows, limit, offset };
     }
 
+    // With bbox → merge intersecting/contained zones via ST_Union before returning.
+    // ST_ClusterDBSCAN(geom, eps=0, minpoints=1) groups geometries that touch or overlap
+    // (distance = 0 in SRID 4326). Zones fully inside another zone are automatically
+    // absorbed into the same cluster. ST_Union removes internal boundary lines.
+    const { minLng, minLat, maxLng, maxLat } = opts.bbox;
     const rows = await this.dataSource.query(
-      `SELECT id, name, danger_level, event_type, description, data_source,
-              valid_from, valid_until, created_at,
-              ST_AsGeoJSON(ST_Simplify(geom, 0.001))::json AS geojson
-       FROM danger_zones
-       WHERE is_active = TRUE
-         AND (valid_until IS NULL OR valid_until > NOW())
-         ${bboxClause}
+      `WITH active AS (
+         SELECT id, name, danger_level, event_type, description, data_source,
+                valid_from, valid_until, created_at, geom
+         FROM danger_zones
+         WHERE is_active = TRUE
+           AND data_source <> 'simulation'
+           AND (valid_until IS NULL OR valid_until > NOW())
+           AND geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+       ),
+       clustered AS (
+         SELECT *,
+           ST_ClusterDBSCAN(geom, 0, 1) OVER () AS cid
+         FROM active
+       ),
+       merged AS (
+         SELECT
+           MIN(id::text)                                                  AS id,
+           (array_agg(name ORDER BY danger_level DESC, created_at ASC))[1] AS name,
+           MAX(danger_level)                                              AS danger_level,
+           MIN(event_type)                                                AS event_type,
+           MIN(description)                                               AS description,
+           MIN(data_source)                                               AS data_source,
+           MIN(valid_from)                                                AS valid_from,
+           MIN(valid_until)                                               AS valid_until,
+           MIN(created_at)                                                AS created_at,
+           COUNT(*)                                                       AS zone_count,
+           ST_AsGeoJSON(
+             ST_SimplifyPreserveTopology(ST_Union(geom), 0.001)
+           )::json                                                        AS geojson
+         FROM clustered
+         GROUP BY cid
+       )
+       SELECT id, name, danger_level, event_type, description, data_source,
+              valid_from, valid_until, created_at, zone_count, geojson
+       FROM merged
        ORDER BY danger_level DESC, created_at DESC
-       LIMIT $1 OFFSET $2`,
-      params,
+       LIMIT $5`,
+      [minLng, minLat, maxLng, maxLat, limit],
     );
 
     return { data: rows, limit, offset };
@@ -302,6 +343,8 @@ export class DangerZonesService {
     return { clusters: result.rowCount ?? 0, penalties_updated: updated };
   }
 
+  // danger_penalty CHỈ phản ánh vùng nguy hiểm THẬT (không gồm 'simulation').
+  // Vùng mô phỏng dùng cột sim_penalty riêng, do SimulationService quản lý.
   async refreshPenalties(): Promise<{ updated: number }> {
     await this.dataSource.query(`UPDATE road_network SET danger_penalty = 0`);
     const result = await this.dataSource.query(
@@ -312,6 +355,7 @@ export class DangerZonesService {
          FROM road_network rn
          JOIN danger_zones dz ON ST_Intersects(rn.geom, dz.geom)
          WHERE dz.is_active = TRUE
+           AND dz.data_source <> 'simulation'
            AND (dz.valid_until IS NULL OR dz.valid_until > NOW())
          GROUP BY rn.id
        ) sub

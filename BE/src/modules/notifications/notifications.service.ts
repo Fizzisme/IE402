@@ -1,6 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
+import { Cron } from '@nestjs/schedule';
+import * as admin from 'firebase-admin';
+import * as path from 'path';
 import { RegisterPushTokenDto } from './dto/register-push-token.dto';
 
 export interface DangerPushPayload {
@@ -11,61 +14,67 @@ export interface DangerPushPayload {
   message: string;
 }
 
-interface RegisteredDevice {
-  expoPushToken: string;
-  platform?: 'android' | 'ios';
-  lat?: number;
-  lng?: number;
-  updatedAt: Date;
-}
-
-interface ExpoPushTicket {
-  status: 'ok' | 'error';
-  id?: string;
-  message?: string;
-  details?: { error?: string };
-}
-
-interface ExpoPushMessage {
-  to: string;
-  sound: 'default';
-  title: string;
-  body: string;
-  data: Record<string, unknown>;
-  priority: 'high';
-  channelId: string;
-}
-
-const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
-const DANGER_CHANNEL_ID = 'danger-alerts';
+const DANGER_CHANNEL_ID = 'danger-alerts-v2';
 const ALERT_DEDUPE_MS = 5 * 60 * 1000;
 
+function initFirebase() {
+  if (admin.apps.length) return;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const sa = require(path.join(process.cwd(), 'firebase-service-account.json'));
+    admin.initializeApp({ credential: admin.credential.cert(sa) });
+  } catch (e) {
+    console.error('[Firebase] Admin init failed — push notifications will not work:', e);
+  }
+}
+initFirebase();
+
 @Injectable()
-export class NotificationsService {
+export class NotificationsService implements OnModuleInit {
   private readonly logger = new Logger(NotificationsService.name);
-  private readonly devices = new Map<string, RegisteredDevice>();
   private readonly tokenBySocketId = new Map<string, string>();
   private readonly lastAlertAt = new Map<string, number>();
 
   constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
 
-  registerToken(dto: RegisterPushTokenDto) {
-    const existing = this.devices.get(dto.expoPushToken);
-    const device: RegisteredDevice = {
-      expoPushToken: dto.expoPushToken,
-      platform: dto.platform ?? existing?.platform,
-      lat: dto.lat ?? existing?.lat,
-      lng: dto.lng ?? existing?.lng,
-      updatedAt: new Date(),
-    };
+  // Tạo bảng lưu device nếu chưa có (devices persist qua restart, không còn dùng RAM)
+  async onModuleInit() {
+    try {
+      await this.dataSource.query(
+        `CREATE TABLE IF NOT EXISTS push_devices (
+          fcm_token  TEXT PRIMARY KEY,
+          platform   VARCHAR(10),
+          geom       geometry(Point, 4326),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`,
+      );
+      await this.dataSource.query(
+        `CREATE INDEX IF NOT EXISTS idx_push_devices_geom ON push_devices USING GIST(geom)`,
+      );
+    } catch (e) {
+      this.logger.warn(`push_devices ensure table failed: ${e}`);
+    }
+  }
 
-    this.devices.set(dto.expoPushToken, device);
-    return {
-      expoPushToken: device.expoPushToken,
-      platform: device.platform,
-      hasLocation: device.lat != null && device.lng != null,
-      updatedAt: device.updatedAt,
-    };
+  async registerToken(dto: RegisterPushTokenDto) {
+    const token = dto.expoPushToken; // field name kept for API compat
+    if (!this.isFcmToken(token)) {
+      return { fcmToken: token, hasLocation: false };
+    }
+    const hasLocation = dto.lat != null && dto.lng != null;
+    await this.dataSource.query(
+      `INSERT INTO push_devices (fcm_token, platform, geom, updated_at)
+       VALUES ($1, $2,
+         CASE WHEN $3::float8 IS NULL OR $4::float8 IS NULL THEN NULL
+              ELSE ST_SetSRID(ST_MakePoint($3, $4), 4326) END,
+         NOW())
+       ON CONFLICT (fcm_token) DO UPDATE SET
+         platform = COALESCE(EXCLUDED.platform, push_devices.platform),
+         geom = COALESCE(EXCLUDED.geom, push_devices.geom),
+         updated_at = NOW()`,
+      [token, dto.platform ?? null, dto.lng ?? null, dto.lat ?? null],
+    );
+    return { fcmToken: token, platform: dto.platform, hasLocation };
   }
 
   updateSocketDevice(
@@ -75,10 +84,9 @@ export class NotificationsService {
     expoPushToken?: string,
   ) {
     const token = expoPushToken ?? this.tokenBySocketId.get(socketId);
-    if (!token || !this.isExpoPushToken(token)) return;
-
+    if (!token || !this.isFcmToken(token)) return;
     this.tokenBySocketId.set(socketId, token);
-    this.registerToken({ expoPushToken: token, lat, lng });
+    void this.registerToken({ expoPushToken: token, lat, lng });
   }
 
   removeSocket(socketId: string) {
@@ -93,68 +101,60 @@ export class NotificationsService {
     zoneGeojson: object,
     payload: DangerPushPayload,
   ) {
-    const devices = [...this.devices.values()].filter(
-      (device) => device.lat != null && device.lng != null,
-    );
-    if (!devices.length) return { sent: 0 };
-
-    const tokens: string[] = [];
-    for (const device of devices) {
-      try {
-        const [row] = await this.dataSource.query(
-          `SELECT ST_Contains(
-            ST_SetSRID(ST_GeomFromGeoJSON($1::text), 4326),
-            ST_SetSRID(ST_MakePoint($2, $3), 4326)
-          ) AS inside`,
-          [JSON.stringify(zoneGeojson), device.lng, device.lat],
-        );
-        if (row?.inside) tokens.push(device.expoPushToken);
-      } catch (err) {
-        this.logger.warn(`Could not check push device location: ${err}`);
-      }
+    let tokens: string[] = [];
+    try {
+      const rows = await this.dataSource.query(
+        `SELECT fcm_token FROM push_devices
+         WHERE geom IS NOT NULL
+           AND ST_Contains(ST_SetSRID(ST_GeomFromGeoJSON($1::text), 4326), geom)`,
+        [JSON.stringify(zoneGeojson)],
+      );
+      tokens = rows.map((r: { fcm_token: string }) => r.fcm_token);
+    } catch (err) {
+      this.logger.warn(`Could not query devices in zone: ${err}`);
     }
-
     return this.sendDangerAlert(tokens, payload, `zone:${payload.zoneId}`);
   }
 
   async notifyDevicesNearRecentZones(source: string) {
-    const devices = [...this.devices.values()].filter(
-      (device) => device.lat != null && device.lng != null,
-    );
-    if (!devices.length) return { sent: 0 };
-
-    const grouped = new Map<string, { payload: DangerPushPayload; tokens: string[] }>();
-    for (const device of devices) {
-      try {
-        const [zone] = await this.dataSource.query(
-          `SELECT id, name, danger_level, event_type
+    let rows: any[] = [];
+    try {
+      rows = await this.dataSource.query(
+        `SELECT d.fcm_token, z.id, z.name, z.danger_level, z.event_type
+         FROM push_devices d
+         JOIN LATERAL (
+           SELECT id, name, danger_level, event_type
            FROM danger_zones
            WHERE is_active = TRUE
              AND data_source = $1
              AND created_at > NOW() - INTERVAL '10 minutes'
-             AND ST_Contains(geom, ST_SetSRID(ST_MakePoint($2, $3), 4326))
+             AND ST_Contains(geom, d.geom)
            ORDER BY danger_level DESC
-           LIMIT 1`,
-          [source, device.lng, device.lat],
-        );
-        if (!zone) continue;
+           LIMIT 1
+         ) z ON TRUE
+         WHERE d.geom IS NOT NULL`,
+        [source],
+      );
+    } catch (err) {
+      this.logger.warn(`Could not query devices near recent zones: ${err}`);
+      return { sent: 0 };
+    }
 
-        const key = String(zone.id);
-        const current = grouped.get(key) ?? {
-          payload: {
-            zoneId: key,
-            zoneName: zone.name ?? 'Vùng nguy hiểm',
-            dangerLevel: Number(zone.danger_level ?? 1),
-            eventType: zone.event_type ?? 'other',
+    const grouped = new Map<string, { payload: DangerPushPayload; tokens: string[] }>();
+    for (const row of rows) {
+      const key = String(row.id);
+      const current = grouped.get(key) ?? {
+        payload: {
+          zoneId: key,
+          zoneName: row.name ?? 'Vùng nguy hiểm',
+          dangerLevel: Number(row.danger_level ?? 1),
+          eventType: row.event_type ?? 'other',
           message: 'Cảnh báo: Vùng nguy hiểm mới xuất hiện gần bạn!',
         },
-          tokens: [] as string[],
-        };
-        current.tokens.push(device.expoPushToken);
-        grouped.set(key, current);
-      } catch (err) {
-        this.logger.warn(`Could not check recent danger zone for push: ${err}`);
-      }
+        tokens: [] as string[],
+      };
+      current.tokens.push(row.fcm_token);
+      grouped.set(key, current);
     }
 
     let sent = 0;
@@ -175,79 +175,66 @@ export class NotificationsService {
     dedupeKey = `danger:${payload.zoneId}`,
   ) {
     const filtered = [...new Set(tokens)]
-      .filter((token) => this.isExpoPushToken(token))
-      .filter((token) => this.shouldSend(token, dedupeKey));
+      .filter((t) => this.isFcmToken(t))
+      .filter((t) => this.shouldSend(t, dedupeKey));
 
     if (!filtered.length) return { sent: 0 };
 
-    const messages = filtered.map((token) => ({
-      to: token,
-      sound: 'default' as const,
-      title: this.getDangerTitle(payload),
-      body: payload.message || `${payload.zoneName} đang nguy hiểm.`,
+    await this.sendFcmMessages(filtered, payload);
+    return { sent: filtered.length };
+  }
+
+  private async sendFcmMessages(tokens: string[], payload: DangerPushPayload) {
+    const title = this.getDangerTitle(payload);
+    const body = payload.message || `${payload.zoneName} đang nguy hiểm.`;
+
+    const messages: admin.messaging.TokenMessage[] = tokens.map((token) => ({
+      token,
+      notification: { title, body },
+      android: {
+        priority: 'high' as const,
+        notification: {
+          channelId: DANGER_CHANNEL_ID,
+          sound: 'alert',
+        },
+      },
       data: {
         type: 'danger_zone_alert',
         zoneId: payload.zoneId,
         zoneName: payload.zoneName,
-        dangerLevel: payload.dangerLevel,
+        dangerLevel: String(payload.dangerLevel),
         eventType: payload.eventType,
       },
-      priority: 'high' as const,
-      channelId: DANGER_CHANNEL_ID,
     }));
 
-    await this.sendExpoMessages(messages);
-    return { sent: messages.length };
-  }
-
-  private async sendExpoMessages(messages: ExpoPushMessage[]) {
-    for (let i = 0; i < messages.length; i += 100) {
-      const chunk = messages.slice(i, i + 100);
+    // FCM supports up to 500 messages per sendEach call
+    for (let i = 0; i < messages.length; i += 500) {
+      const batch = messages.slice(i, i + 500);
       try {
-        const response = await fetch(EXPO_PUSH_URL, {
-          method: 'POST',
-          headers: {
-            Accept: 'application/json',
-            'Accept-Encoding': 'gzip, deflate',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(chunk),
-        });
-
-        if (!response.ok) {
+        const result = await admin.messaging().sendEach(batch);
+        result.responses.forEach((resp, idx) => {
+          if (resp.success) return;
+          const errCode = resp.error?.code;
           this.logger.warn(
-            `Expo Push API failed ${response.status}: ${await response.text()}`,
+            `FCM failed for token ${batch[idx]?.token.slice(0, 20)}…: ${resp.error?.message}`,
           );
-          continue;
-        }
-
-        const body = (await response.json()) as {
-          data?: ExpoPushTicket[];
-          errors?: unknown[];
-        };
-        if (body.errors?.length) {
-          this.logger.warn(`Expo Push API errors: ${JSON.stringify(body.errors)}`);
-        }
-        body.data?.forEach((ticket, index) => {
-          if (ticket.status !== 'error') return;
-          const token = chunk[index]?.to;
-          this.logger.warn(
-            `Expo push ticket error for ${token}: ${ticket.message ?? 'unknown'}`,
-          );
-          if (ticket.details?.error === 'DeviceNotRegistered' && token) {
-            this.devices.delete(token);
+          if (errCode === 'messaging/registration-token-not-registered') {
+            void this.dataSource.query(
+              `DELETE FROM push_devices WHERE fcm_token = $1`,
+              [batch[idx]!.token],
+            );
           }
         });
       } catch (err) {
-        this.logger.warn(`Expo Push API request failed: ${err}`);
+        this.logger.warn(`FCM sendEach error: ${err}`);
       }
     }
   }
 
   private getDangerTitle(payload: DangerPushPayload) {
-    if (payload.eventType === 'air_raid_alert') return 'Cảnh báo không kích';
-    if (payload.dangerLevel >= 5) return 'Cảnh báo nguy hiểm cấp cao';
-    return 'Cảnh báo vùng nguy hiểm';
+    if (payload.eventType === 'air_raid_alert') return '🚨 Cảnh báo không kích';
+    if (payload.dangerLevel >= 5) return '🚨 Cảnh báo nguy hiểm cấp cao';
+    return '⚠️ Cảnh báo vùng nguy hiểm';
   }
 
   private shouldSend(token: string, key: string) {
@@ -259,7 +246,49 @@ export class NotificationsService {
     return true;
   }
 
-  private isExpoPushToken(token: string) {
-    return /^(ExpoPushToken|ExponentPushToken)\[[^\]]+\]$/.test(token);
+  // Mỗi phút: check tất cả device đang ở trong danger zone → push FCM
+  // Xử lý case app bị kill nhưng server vẫn có last known location
+  @Cron('* * * * *')
+  async checkAllDevicesInZones() {
+    let rows: any[] = [];
+    try {
+      rows = await this.dataSource.query(
+        `SELECT d.fcm_token, z.id, z.name, z.danger_level, z.event_type
+         FROM push_devices d
+         JOIN LATERAL (
+           SELECT id, name, danger_level, event_type
+           FROM danger_zones
+           WHERE is_active = TRUE
+             AND data_source <> 'simulation'
+             AND (valid_until IS NULL OR valid_until > NOW())
+             AND ST_Contains(geom, d.geom)
+           ORDER BY danger_level DESC
+           LIMIT 1
+         ) z ON TRUE
+         WHERE d.geom IS NOT NULL`,
+      );
+    } catch (err) {
+      this.logger.warn(`Cron zone check query failed: ${err}`);
+      return;
+    }
+
+    for (const row of rows) {
+      await this.sendDangerAlert(
+        [row.fcm_token],
+        {
+          zoneId: String(row.id),
+          zoneName: row.name ?? 'Vùng nguy hiểm',
+          dangerLevel: Number(row.danger_level ?? 1),
+          eventType: row.event_type ?? 'other',
+          message: `Cảnh báo: Bạn đang ở vùng nguy hiểm!`,
+        },
+        `cron:${row.id}`, // dedupeKey — cooldown 5 phút tránh spam
+      );
+    }
+  }
+
+  private isFcmToken(token: string) {
+    // FCM tokens are 140-180 chars. Expo push tokens are shorter (~40 chars).
+    return typeof token === 'string' && token.length > 100;
   }
 }

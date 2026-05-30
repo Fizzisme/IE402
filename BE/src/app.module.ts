@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AuthModule } from './modules/auth/auth.module';
 import { UserModule } from './modules/user/user.module';
 import { ShelterModule } from './modules/shelter/shelter.module';
@@ -10,11 +11,13 @@ import { RouteModule } from './modules/route/route.module';
 import { MapModule } from './modules/map/map.module';
 import { EventsModule } from './modules/events/events.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { SimulationModule } from './modules/simulation/simulation.module';
 
 @Module({
   imports: [
     //   Đọc env và inject vào toàn app
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -47,6 +50,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
     MapModule,
     NotificationsModule,
     EventsModule,
+    SimulationModule,
   ],
 })
 export class AppModule {}

@@ -19,6 +19,13 @@ export interface DangerZoneAlertPayload {
   message: string;
 }
 
+export interface ShelterOccupancyPayload {
+  shelterId: string;
+  currentOccupancy: number;
+  capacity: number;
+  status: string;
+}
+
 @WebSocketGateway({ cors: { origin: '*' } })
 export class EventsGateway implements OnGatewayDisconnect {
   @WebSocketServer()
@@ -36,6 +43,11 @@ export class EventsGateway implements OnGatewayDisconnect {
     this.clientLocations.delete(client.id);
     this.clientDangerStatus.delete(client.id);
     this.notificationsService.removeSocket(client.id);
+  }
+
+  // Phát cho mọi client khi 1 shelter có người check-in/checkout
+  broadcastShelterUpdate(payload: ShelterOccupancyPayload) {
+    this.server.emit('shelter_occupancy_changed', payload);
   }
 
   @SubscribeMessage('register_location')

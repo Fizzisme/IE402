@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,8 @@ import {
   ScrollView,
   StyleSheet,
   ActivityIndicator,
+  Animated,
+  PanResponder,
 } from 'react-native';
 import type { Shelter } from '@/types/shelter';
 import type { RouteResult } from '@/types/route-result';
@@ -17,7 +19,17 @@ interface BottomCardProps {
   isEmergency: boolean;
   isRouteLoading: boolean;
   onSelectShelter: (shelter: Shelter) => void;
+  activeCheckinShelterId: string | null;
+  isCheckinLoading: boolean;
+  isLoggedIn: boolean;
+  isAtShelter: boolean;
+  hasArrived: boolean;
+  remainingDistanceM: number;
+  onCheckin: (shelter: Shelter) => void;
+  onCheckout: () => void;
 }
+
+const PEEK_HEIGHT = 40;
 
 const formatDistance = (meters: number): string => {
   if (meters < 1000) return `${Math.round(meters)}m`;
@@ -31,6 +43,13 @@ const formatTime = (minutes: number): string => {
   return `${h}h${m > 0 ? m + 'm' : ''}`;
 };
 
+// riskPercent = mức nguy hiểm cao nhất tuyến đi qua (0–100), tính ở backend.
+const riskColor = (pct: number): string =>
+  pct < 20 ? '#16A34A' : pct < 50 ? '#F59E0B' : '#EF4444';
+
+const riskLabel = (pct: number): string =>
+  pct < 20 ? 'Thấp' : pct < 50 ? 'Trung bình' : 'Cao';
+
 export function BottomCard({
   selectedShelter,
   shelters,
@@ -38,21 +57,86 @@ export function BottomCard({
   isEmergency,
   isRouteLoading,
   onSelectShelter,
+  activeCheckinShelterId,
+  isCheckinLoading,
+  isLoggedIn,
+  isAtShelter,
+  hasArrived,
+  remainingDistanceM,
+  onCheckin,
+  onCheckout,
 }: BottomCardProps) {
-  const availableCapacity = selectedShelter
-    ? selectedShelter.capacity - selectedShelter.currentOccupancy
-    : 0;
+  const translateY = useRef(new Animated.Value(0)).current;
+  const fullHeightRef = useRef(0);
+  const isExpandedRef = useRef(true);
+  const dragStartRef = useRef(0);
+
+  // collapseAmount reads fullHeightRef at call-time so it's always fresh
+  const collapseAmount = () => Math.max(0, fullHeightRef.current - PEEK_HEIGHT);
+
+  const snapTo = (expand: boolean) => {
+    isExpandedRef.current = expand;
+    Animated.spring(translateY, {
+      toValue: expand ? 0 : collapseAmount(),
+      useNativeDriver: true,
+      tension: 65,
+      friction: 11,
+    }).start();
+  };
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, { dy }) => Math.abs(dy) > 5,
+      onPanResponderGrant: () => {
+        // Freeze current animated value, then use offset so dy starts from 0
+        translateY.stopAnimation((v) => {
+          dragStartRef.current = v;
+          translateY.setOffset(v);
+          translateY.setValue(0);
+        });
+      },
+      onPanResponderMove: (_, { dy }) => {
+        const base = dragStartRef.current;
+        const maxDown = collapseAmount() - base; // can't go below collapsed
+        const maxUp = -base;                     // can't go above expanded (translateY < 0)
+        translateY.setValue(Math.max(maxUp, Math.min(maxDown, dy)));
+      },
+      onPanResponderRelease: (_, { dy, vy }) => {
+        translateY.flattenOffset();
+        const finalVal = dragStartRef.current + dy;
+        // Fast swipe up OR past upper 55% → expand; otherwise collapse
+        const expand = vy < -0.5 || finalVal < collapseAmount() * 0.55;
+        snapTo(expand);
+      },
+    }),
+  ).current;
+
+  const onLayout = (e: { nativeEvent: { layout: { height: number } } }) => {
+    const h = e.nativeEvent.layout.height;
+    if (h > PEEK_HEIGHT) fullHeightRef.current = h;
+  };
 
   return (
-    <View style={styles.container}>
-      {/* Emergency indicator */}
+    <Animated.View
+      style={[styles.container, { transform: [{ translateY }] }]}
+      onLayout={onLayout}
+    >
+      {/* Handle — drag or tap to toggle */}
+      <TouchableOpacity
+        style={styles.handleArea}
+        onPress={() => snapTo(!isExpandedRef.current)}
+        activeOpacity={1}
+        {...panResponder.panHandlers}
+      >
+        <View style={styles.handlePill} />
+      </TouchableOpacity>
+
       {isEmergency && (
         <View style={styles.emergencyBanner}>
           <Text style={styles.emergencyText}>⚠️ CẢNH BÁO: Bạn ở trong vùng nguy hiểm!</Text>
         </View>
       )}
 
-      {/* Selected shelter card */}
       {selectedShelter && (
         <View style={styles.selectedCard}>
           <View style={styles.selectedHeader}>
@@ -72,31 +156,99 @@ export function BottomCard({
                 <ActivityIndicator size="small" color="#3B82F6" />
                 <Text style={styles.loadingText}>Tính toán tuyến đường...</Text>
               </View>
+            ) : hasArrived ? (
+              <View style={styles.arrivedBox}>
+                <Text style={styles.arrivedText}>✓ Bạn đã đến nơi trú ẩn</Text>
+              </View>
             ) : routeResult ? (
               <>
                 <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Khoảng cách:</Text>
+                  <Text style={styles.infoLabel}>Khoảng cách còn lại:</Text>
                   <Text style={styles.infoValue}>
-                    {formatDistance(routeResult.totalDistanceM)}
+                    {formatDistance(remainingDistanceM || routeResult.totalDistanceM)}
                   </Text>
                 </View>
                 <View style={styles.infoRow}>
                   <Text style={styles.infoLabel}>Thời gian:</Text>
                   <Text style={styles.infoValue}>
-                    {formatTime(routeResult.estimatedTimeMin)}
+                    {formatTime(
+                      routeResult.totalDistanceM > 0
+                        ? routeResult.estimatedTimeMin *
+                            ((remainingDistanceM || routeResult.totalDistanceM) /
+                              routeResult.totalDistanceM)
+                        : routeResult.estimatedTimeMin,
+                    )}
                   </Text>
-                </View>
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Mức rủi ro:</Text>
-                  <Text style={styles.riskScore}>{routeResult.totalRiskScore.toFixed(1)}</Text>
                 </View>
               </>
             ) : null}
           </View>
+
+          {(() => {
+            const isCheckedInHere = activeCheckinShelterId === selectedShelter.id;
+            const checkedInElsewhere =
+              !!activeCheckinShelterId && !isCheckedInHere;
+            const isFull =
+              selectedShelter.capacity > 0 &&
+              selectedShelter.currentOccupancy >= selectedShelter.capacity;
+
+            if (isCheckedInHere) {
+              return (
+                <TouchableOpacity
+                  style={[styles.checkinBtn, styles.checkoutBtn]}
+                  onPress={onCheckout}
+                  disabled={isCheckinLoading}
+                  activeOpacity={0.8}
+                >
+                  {isCheckinLoading ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.checkinBtnText}>Check-out</Text>
+                  )}
+                </TouchableOpacity>
+              );
+            }
+
+            // Chưa đăng nhập: nút vẫn hiện, bấm vào sẽ nhắc đăng nhập
+            if (!isLoggedIn) {
+              return (
+                <TouchableOpacity
+                  style={styles.checkinBtn}
+                  onPress={() => onCheckin(selectedShelter)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.checkinBtnText}>Đăng nhập để check-in</Text>
+                </TouchableOpacity>
+              );
+            }
+
+            const disabled =
+              isCheckinLoading || checkedInElsewhere || isFull || !isAtShelter;
+            const label = checkedInElsewhere
+              ? 'Đang check-in ở nơi khác'
+              : isFull
+                ? 'Đã đầy chỗ'
+                : !isAtShelter
+                  ? 'Hãy đến nơi trú ẩn để check-in'
+                  : 'Check-in tại đây';
+            return (
+              <TouchableOpacity
+                style={[styles.checkinBtn, disabled && styles.checkinBtnDisabled]}
+                onPress={() => onCheckin(selectedShelter)}
+                disabled={disabled}
+                activeOpacity={0.8}
+              >
+                {isCheckinLoading ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.checkinBtnText}>{label}</Text>
+                )}
+              </TouchableOpacity>
+            );
+          })()}
         </View>
       )}
 
-      {/* Nearby shelters list */}
       {shelters.length > 0 && (
         <View style={styles.shelterListContainer}>
           <Text style={styles.listTitle}>
@@ -113,15 +265,15 @@ export function BottomCard({
               return (
                 <TouchableOpacity
                   key={shelter.id}
-                  style={[
-                    styles.shelterItem,
-                    isSelected && styles.shelterItemSelected,
-                  ]}
+                  style={[styles.shelterItem, isSelected && styles.shelterItemSelected]}
                   onPress={() => onSelectShelter(shelter)}
                   activeOpacity={0.7}
                 >
                   <Text
-                    style={[styles.shelterItemName, isSelected && styles.shelterItemNameSelected]}
+                    style={[
+                      styles.shelterItemName,
+                      isSelected && styles.shelterItemNameSelected,
+                    ]}
                     numberOfLines={2}
                   >
                     {shelter.name}
@@ -138,16 +290,19 @@ export function BottomCard({
           <Text style={styles.emptyStateText}>Không có nơi trú ẩn gần bạn</Text>
         </View>
       )}
-    </View>
+    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
     backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
-    paddingTop: 12,
     paddingHorizontal: 16,
     paddingBottom: 24,
     elevation: 8,
@@ -155,6 +310,18 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: -4 },
+  },
+  handleArea: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    marginHorizontal: -16,
+  },
+  handlePill: {
+    width: 40,
+    height: 4,
+    backgroundColor: '#D1D5DB',
+    borderRadius: 2,
   },
   emergencyBanner: {
     backgroundColor: '#FEE2E2',
@@ -222,6 +389,36 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#EF4444',
   },
+  checkinBtn: {
+    marginTop: 12,
+    backgroundColor: '#16A34A',
+    borderRadius: 8,
+    paddingVertical: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 42,
+  },
+  checkinBtnDisabled: {
+    backgroundColor: '#94A3B8',
+  },
+  checkoutBtn: {
+    backgroundColor: '#DC2626',
+  },
+  checkinBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  arrivedBox: {
+    paddingVertical: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  arrivedText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#16A34A',
+  },
   loadingRoute: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -268,28 +465,6 @@ const styles = StyleSheet.create({
   },
   shelterItemNameSelected: {
     color: '#0369A1',
-  },
-  shelterItemDistance: {
-    fontSize: 11,
-    color: '#64748B',
-    marginBottom: 3,
-  },
-  shelterItemDistanceSelected: {
-    fontSize: 11,
-    color: '#0369A1',
-    marginBottom: 3,
-  },
-  shelterItemLoader: {
-    marginBottom: 3,
-    alignSelf: 'flex-start',
-  },
-  shelterItemCapacity: {
-    fontSize: 10,
-    color: '#6B7280',
-    fontWeight: '600',
-  },
-  shelterItemCapacitySelected: {
-    color: '#059669',
   },
   emptyState: {
     paddingVertical: 24,

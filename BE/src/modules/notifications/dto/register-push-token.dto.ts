@@ -3,7 +3,6 @@ import {
   IsNumber,
   IsOptional,
   IsString,
-  Matches,
   Max,
   Min,
 } from 'class-validator';
@@ -11,8 +10,7 @@ import { Type } from 'class-transformer';
 
 export class RegisterPushTokenDto {
   @IsString()
-  @Matches(/^(ExpoPushToken|ExponentPushToken)\[[^\]]+\]$/)
-  expoPushToken: string;
+  expoPushToken: string; // FCM device token (field name kept for API compat)
 
   @IsOptional()
   @IsIn(['android', 'ios'])

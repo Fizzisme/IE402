@@ -28,7 +28,7 @@ export async function watchPosition(
 ): Promise<Location.LocationSubscription | null> {
   if (!(await ensurePermission())) return null;
   return Location.watchPositionAsync(
-    { accuracy: Location.Accuracy.High, distanceInterval: 5 },
+    { accuracy: Location.Accuracy.High, distanceInterval: 0, timeInterval: 3000 },
     (pos) => onPos([pos.coords.longitude, pos.coords.latitude])
   );
 }

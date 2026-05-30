@@ -15,6 +15,7 @@ import { ShelterService } from './shelter.service';
 import { CreateShelterDto } from './dto/create-shelter.dto';
 import { FindNearestDto } from './dto/find-nearest.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
+import { CheckinDto } from './dto/checkin.dto';
 
 @Controller('shelters')
 export class ShelterController {
@@ -39,6 +40,13 @@ export class ShelterController {
     return { data: shelters };
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Get('my-active-checkin')
+  async myActiveCheckin(@Req() req: any) {
+    const checkin = await this.shelterService.getActiveCheckin(req.user.userId);
+    return { data: checkin };
+  }
+
   @Get(':id')
   async findOne(@Param('id', ParseUUIDPipe) id: string) {
     const shelter = await this.shelterService.findById(id);
@@ -49,9 +57,15 @@ export class ShelterController {
   @Post(':id/checkin')
   async checkin(
     @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CheckinDto,
     @Req() req: any,
   ) {
-    const result = await this.shelterService.checkin(id, req.user.userId);
+    const result = await this.shelterService.checkin(
+      id,
+      req.user.userId,
+      dto.lat,
+      dto.lng,
+    );
     return { message: 'Checked in successfully', data: result };
   }
 
