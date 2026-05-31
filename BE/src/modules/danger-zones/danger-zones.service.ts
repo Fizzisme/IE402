@@ -45,7 +45,7 @@ export class DangerZonesService {
       ],
     );
     const zone = rows[0];
-    await this.refreshPenalties();
+    if (zone?.id) await this.bumpPenaltyForZone(zone.id);
     if (zone?.geojson) {
       void this.eventsGateway.notifyClientsInZone(zone.geojson, {
         zoneId: zone.id,
@@ -66,15 +66,20 @@ export class DangerZonesService {
       `INSERT INTO danger_zones (
         name, geom, danger_level, event_type, description, data_source,
         valid_from, valid_until, is_active, created_by
-      ) VALUES (
-        $1,
-        ST_Buffer(ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography, $4)::geometry,
-        $5, $6, $7, $8,
-        COALESCE($9::timestamptz, NOW()), $10::timestamptz, TRUE, $11
-      ) RETURNING id, name, danger_level, event_type, description, data_source,
-                  valid_from, valid_until, is_active, created_by,
-                  created_at, updated_at,
-                  ST_AsGeoJSON(geom)::json AS geojson`,
+      )
+      SELECT $1,
+             ST_Buffer(
+               ST_SetSRID(
+                 ST_MakePoint($2::double precision, $3::double precision), 4326
+               )::geography,
+               $4::double precision
+             )::geometry,
+             $5::int, $6, $7, $8,
+             COALESCE($9::timestamptz, NOW()), $10::timestamptz, TRUE, $11
+      RETURNING id, name, danger_level, event_type, description, data_source,
+                valid_from, valid_until, is_active, created_by,
+                created_at, updated_at,
+                ST_AsGeoJSON(geom)::json AS geojson`,
       [
         dto.name ?? null,
         dto.lng,
@@ -90,7 +95,7 @@ export class DangerZonesService {
       ],
     );
     const zone = rows[0];
-    await this.refreshPenalties();
+    if (zone?.id) await this.bumpPenaltyForZone(zone.id);
     if (zone?.geojson) {
       void this.eventsGateway.notifyClientsInZone(zone.geojson, {
         zoneId: zone.id,
@@ -412,6 +417,42 @@ export class DangerZonesService {
     return { updated: result.rowCount ?? 0 };
   }
 
+  // Scoped: chỉ tăng penalty cho các đường GIAO với zone vừa tạo (id).
+  // GREATEST giữ giá trị cao hơn của zone khác → không hạ nhầm. Rất nhẹ.
+  private async bumpPenaltyForZone(zoneId: string): Promise<number> {
+    const result = await this.dataSource.query(
+      `UPDATE road_network rn
+       SET danger_penalty = GREATEST(rn.danger_penalty, dz.danger_level)
+       FROM danger_zones dz
+       WHERE dz.id = $1
+         AND dz.data_source <> 'simulation'
+         AND ST_Intersects(rn.geom, dz.geom)`,
+      [zoneId],
+    );
+    return result.rowCount ?? 0;
+  }
+
+  // Scoped: zone (id) vừa bị tắt → chỉ tính lại penalty cho các đường
+  // từng giao với nó, dựa trên các zone THẬT còn active. Không đụng đường khác.
+  private async recomputePenaltyForZone(zoneId: string): Promise<number> {
+    const result = await this.dataSource.query(
+      `UPDATE road_network rn
+       SET danger_penalty = COALESCE((
+         SELECT MAX(d.danger_level)
+         FROM danger_zones d
+         WHERE d.is_active = TRUE
+           AND d.data_source <> 'simulation'
+           AND (d.valid_until IS NULL OR d.valid_until > NOW())
+           AND ST_Intersects(rn.geom, d.geom)
+       ), 0)
+       FROM danger_zones dz
+       WHERE dz.id = $1
+         AND ST_Intersects(rn.geom, dz.geom)`,
+      [zoneId],
+    );
+    return result.rowCount ?? 0;
+  }
+
   async softDelete(id: string) {
     const rows = await this.dataSource.query(
       `UPDATE danger_zones SET is_active = FALSE, updated_at = NOW()
@@ -422,7 +463,7 @@ export class DangerZonesService {
     if (!rows.length) {
       throw new NotFoundException(`DangerZone ${id} not found`);
     }
-    await this.refreshPenalties();
+    await this.recomputePenaltyForZone(id);
     this.eventsGateway.broadcastZonesChanged({ op: 'delete', id });
     return rows[0];
   }
