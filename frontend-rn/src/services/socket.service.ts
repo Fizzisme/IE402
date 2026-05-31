@@ -20,6 +20,7 @@ export interface SocketHandlers {
   onEmergencyChange: (isEmergency: boolean) => void;
   onDangerZoneAlert: (alert: DangerZoneAlert) => void;
   onShelterUpdate: (update: ShelterOccupancyUpdate) => void;
+  onZonesChanged: () => void;
 }
 
 export class SocketService {
@@ -58,6 +59,13 @@ export class SocketService {
           eventType: String(data?.eventType ?? ''),
           message: String(data?.message ?? 'Cảnh báo vùng nguy hiểm!'),
         });
+      } catch {
+        /* ignore */
+      }
+    });
+    this.socket.on('danger_zones_changed', () => {
+      try {
+        h.onZonesChanged();
       } catch {
         /* ignore */
       }

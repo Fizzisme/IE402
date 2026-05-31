@@ -50,6 +50,12 @@ export class EventsGateway implements OnGatewayDisconnect {
     this.server.emit('shelter_occupancy_changed', payload);
   }
 
+  // Phát cho mọi client khi danh sách danger zone thay đổi (tạo/xoá)
+  // → client refetch theo viewport hiện tại để cập nhật bản đồ realtime
+  broadcastZonesChanged(payload: { op: 'create' | 'delete'; id?: string }) {
+    this.server.emit('danger_zones_changed', payload);
+  }
+
   @SubscribeMessage('register_location')
   async handleRegisterLocation(
     @ConnectedSocket() client: Socket,

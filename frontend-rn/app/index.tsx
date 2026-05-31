@@ -57,6 +57,19 @@ interface Bounds {
   maxLng: number;
 }
 
+// Bbox vuông quanh 1 điểm (mặc định ~±0.08° ≈ 9km) — dùng khi chưa có viewport thật
+function boundsAround(loc: LngLat, d = 0.08): Bounds {
+  return {
+    minLng: loc[0] - d, minLat: loc[1] - d,
+    maxLng: loc[0] + d, maxLat: loc[1] + d,
+  };
+}
+
+// VN bbox thô — lọc toạ độ GPS rác của emulator (mặc định hay ở US)
+function inVietnam(p: LngLat): boolean {
+  return p[0] >= 102 && p[0] <= 110 && p[1] >= 8 && p[1] <= 24;
+}
+
 function debounce<T extends (...args: any[]) => void>(fn: T, ms: number) {
   let timer: ReturnType<typeof setTimeout> | null = null;
   return (...args: Parameters<T>) => {
@@ -142,6 +155,7 @@ export default function MapScreen() {
   const zoomRef = useRef(12);
   const pushTokenRef = useRef<string | null>(null);
   const lastNotifRef = useRef<number>(0);
+  const lastBoundsRef = useRef<Bounds | null>(null);
 
   const [currentAlert, setCurrentAlert] = useState<DangerZoneAlert | null>(null);
   const [simPath, setSimPath] = useState<LngLat[] | null>(null);
@@ -242,6 +256,13 @@ export default function MapScreen() {
       onShelterUpdate: (update) => {
         useMapStore.getState().applyShelterUpdate(update);
       },
+      onZonesChanged: () => {
+        // Zone vừa được tạo/xoá ở server → vẽ lại theo viewport đang xem
+        const bounds =
+          lastBoundsRef.current ??
+          boundsAround(useMapStore.getState().userLocation);
+        useMapStore.getState().fetchDangerZones(zoomRef.current, bounds);
+      },
     });
     return () => socket.dispose();
   }, []);
@@ -303,7 +324,9 @@ export default function MapScreen() {
       // LngLatBounds is a flat tuple: [west, south, east, north]
       if (Array.isArray(bounds) && bounds.length === 4) {
         const [west, south, east, north] = bounds;
-        fetchForBounds({ minLng: west, minLat: south, maxLng: east, maxLat: north });
+        const b = { minLng: west, minLat: south, maxLng: east, maxLat: north };
+        lastBoundsRef.current = b;
+        fetchForBounds(b);
       }
     },
     [fetchForBounds]
@@ -318,16 +341,28 @@ export default function MapScreen() {
       const st = useMapStore.getState();
 
       const pos = await getCurrentPosition();
-      if (pos) {
+      // GPS hợp lệ (trong VN) thì dùng, ngược lại giữ DEFAULT_LOCATION (HCMC)
+      // → tránh emulator bay sang US làm bản đồ không có zone nào
+      const valid = pos && inVietnam(pos);
+      if (valid) {
         st.setUserLocation(pos);
         socketRef.current?.updateLocation(pos[1], pos[0]);
         if (pushTokenRef.current) {
           void registerPushTokenWithBackend(pushTokenRef.current, pos);
         }
-        cameraRef.current?.flyTo({ center: pos, zoom: 14, duration: 1000 });
       }
+      const loc = valid ? pos : useMapStore.getState().userLocation;
+      zoomRef.current = 14;
+      cameraRef.current?.flyTo({ center: loc, zoom: 14, duration: 1000 });
 
-      await Promise.all([st.fetchShelters(zoomRef.current), st.checkDanger()]);
+      // Fetch zones ngay lúc init — không chờ sự kiện region-change đầu tiên
+      const initBounds = boundsAround(loc);
+      lastBoundsRef.current = initBounds;
+      await Promise.all([
+        st.fetchShelters(zoomRef.current),
+        st.fetchDangerZones(zoomRef.current, initBounds),
+        st.checkDanger(),
+      ]);
       await st.recalcRoute();
       useMapStore.setState({ isLoading: false });
 

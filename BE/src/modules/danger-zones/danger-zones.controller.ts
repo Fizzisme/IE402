@@ -13,6 +13,7 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { DangerZonesService } from './danger-zones.service';
 import { CreateDangerZoneDto } from './dto/create-danger-zone.dto';
+import { CreateCircleDangerZoneDto } from './dto/create-circle-danger-zone.dto';
 import { ClusterZonesDto } from './dto/cluster-zones.dto';
 import { ImportAcledDto } from './dto/import-acled.dto';
 import { ImportUcdpDto } from './dto/import-ucdp.dto';
@@ -26,6 +27,13 @@ export class DangerZonesController {
   async create(@Body() dto: CreateDangerZoneDto, @Req() req: any) {
     const zone = await this.dangerZonesService.create(dto, req.user.userId);
     return { message: 'Danger zone created', data: zone };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('circle')
+  async createCircle(@Body() dto: CreateCircleDangerZoneDto, @Req() req: any) {
+    const zone = await this.dangerZonesService.createCircle(dto, req.user.userId);
+    return { message: 'Danger zone (circle) created', data: zone };
   }
 
   @Get()

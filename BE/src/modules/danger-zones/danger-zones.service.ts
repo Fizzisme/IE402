@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { CreateDangerZoneDto } from './dto/create-danger-zone.dto';
+import { CreateCircleDangerZoneDto } from './dto/create-circle-danger-zone.dto';
 import { AcledEventDto } from './dto/import-acled.dto';
 import { UcdpEventDto } from './dto/import-ucdp.dto';
 import { EventsGateway } from '../events/events.gateway';
@@ -44,6 +45,7 @@ export class DangerZonesService {
       ],
     );
     const zone = rows[0];
+    await this.refreshPenalties();
     if (zone?.geojson) {
       void this.eventsGateway.notifyClientsInZone(zone.geojson, {
         zoneId: zone.id,
@@ -53,6 +55,52 @@ export class DangerZonesService {
         message: 'Cảnh báo: Vùng nguy hiểm mới xuất hiện gần bạn!',
       });
     }
+    this.eventsGateway.broadcastZonesChanged({ op: 'create', id: zone?.id });
+    return zone;
+  }
+
+  // Tạo danger zone hình tròn từ tâm (lat/lng) + bán kính (mét).
+  // Tiện cho việc tạo nhanh/test: ST_Buffer trên geography cho ra mét chính xác.
+  async createCircle(dto: CreateCircleDangerZoneDto, userId?: string) {
+    const rows = await this.dataSource.query(
+      `INSERT INTO danger_zones (
+        name, geom, danger_level, event_type, description, data_source,
+        valid_from, valid_until, is_active, created_by
+      ) VALUES (
+        $1,
+        ST_Buffer(ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography, $4)::geometry,
+        $5, $6, $7, $8,
+        COALESCE($9::timestamptz, NOW()), $10::timestamptz, TRUE, $11
+      ) RETURNING id, name, danger_level, event_type, description, data_source,
+                  valid_from, valid_until, is_active, created_by,
+                  created_at, updated_at,
+                  ST_AsGeoJSON(geom)::json AS geojson`,
+      [
+        dto.name ?? null,
+        dto.lng,
+        dto.lat,
+        dto.radius_meters,
+        dto.danger_level,
+        dto.event_type,
+        dto.description ?? null,
+        dto.data_source ?? 'manual',
+        dto.valid_from ?? null,
+        dto.valid_until ?? null,
+        userId ?? null,
+      ],
+    );
+    const zone = rows[0];
+    await this.refreshPenalties();
+    if (zone?.geojson) {
+      void this.eventsGateway.notifyClientsInZone(zone.geojson, {
+        zoneId: zone.id,
+        zoneName: zone.name ?? 'Vùng nguy hiểm',
+        dangerLevel: zone.danger_level,
+        eventType: zone.event_type,
+        message: 'Cảnh báo: Vùng nguy hiểm mới xuất hiện gần bạn!',
+      });
+    }
+    this.eventsGateway.broadcastZonesChanged({ op: 'create', id: zone?.id });
     return zone;
   }
 
@@ -374,6 +422,8 @@ export class DangerZonesService {
     if (!rows.length) {
       throw new NotFoundException(`DangerZone ${id} not found`);
     }
+    await this.refreshPenalties();
+    this.eventsGateway.broadcastZonesChanged({ op: 'delete', id });
     return rows[0];
   }
 }

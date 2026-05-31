@@ -13,3 +13,5 @@ database/
 *.csv
 firebase-service-account.json
 *-adminsdk-*.json
+
+*.apk
