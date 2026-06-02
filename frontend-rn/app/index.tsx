@@ -1,6 +1,6 @@
 import { useEffect, useRef, useMemo, useCallback, useState } from 'react';
 import { View, Text, TouchableOpacity, Alert, Platform, ToastAndroid, ScrollView } from 'react-native';
-import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/lib/theme-context';
 import { useMapStore } from '@/store/map.store';
@@ -59,7 +59,7 @@ interface Bounds {
 }
 
 // Khoảng cách tới shelter để tự thông báo + check-in (chặt hơn ARRIVAL_RADIUS_M=50 của routing)
-const ARRIVAL_CHECKIN_M = 10;
+const ARRIVAL_CHECKIN_M = 5;
 
 // Bbox vuông quanh 1 điểm (mặc định ~±0.08° ≈ 9km) — dùng khi chưa có viewport thật
 function boundsAround(loc: LngLat, d = 0.08): Bounds {
@@ -226,6 +226,22 @@ export default function MapScreen() {
   const handleMyLocation = useCallback(() => {
     const loc = useMapStore.getState().userLocation;
     cameraRef.current?.flyTo({ center: loc, zoom: 15, duration: 800 });
+  }, []);
+
+  // Tap shelter trên bản đồ → chủ động select (giống bấm trên bottom card)
+  const handleShelterPress = useCallback((e: any) => {
+    const id = e?.features?.[0]?.properties?.id;
+    if (!id) return;
+    const sh = useMapStore.getState().shelters.find((s) => s.id === id);
+    if (sh) {
+      useMapStore.getState().selectShelter(sh);
+      cameraRef.current?.flyTo({ center: [sh.lng, sh.lat], duration: 600 });
+    }
+  }, []);
+
+  // Tap 1 dòng giải thích trong panel AI → bay camera tới điểm dự đoán đó
+  const handlePredictedPress = useCallback((p: PredictedDrop) => {
+    cameraRef.current?.flyTo({ center: [p.lng, p.lat], zoom: 14, duration: 700 });
   }, []);
 
   // Socket setup
@@ -552,7 +568,7 @@ export default function MapScreen() {
       features: shelters.map((sh) => ({
         type: 'Feature' as const,
         geometry: { type: 'Point', coordinates: [sh.lng, sh.lat] },
-        properties: { type: sh.type ?? 'community_center' },
+        properties: { id: sh.id, type: sh.type ?? 'community_center' },
       })),
     }),
     [shelters]
@@ -653,13 +669,31 @@ export default function MapScreen() {
           <Layer
             id="sim-zones-fill"
             type="fill"
-            paint={{ 'fill-color': '#F97316', 'fill-opacity': 0.18 }}
+            paint={{
+              // Màu theo mức nguy hiểm dự đoán 1→5 (vàng → cam → đỏ → đỏ đậm)
+              'fill-color': [
+                'step', ['get', 'level'],
+                '#FDE047',
+                2, '#FB923C',
+                3, '#F97316',
+                4, '#EF4444',
+                5, '#991B1B',
+              ],
+              'fill-opacity': 0.22,
+            }}
           />
           <Layer
             id="sim-zones-outline"
             type="line"
             paint={{
-              'line-color': '#EA580C',
+              'line-color': [
+                'step', ['get', 'level'],
+                '#CA8A04',
+                2, '#EA580C',
+                3, '#C2410C',
+                4, '#DC2626',
+                5, '#7F1D1D',
+              ],
               'line-width': 1.5,
               'line-dasharray': [2, 2],
             }}
@@ -732,7 +766,7 @@ export default function MapScreen() {
 
         {/* Shelter markers — native symbol layer, zero JS-bridge lag */}
         <Images images={SHELTER_IMAGES} />
-        <GeoJSONSource id="shelters" data={sheltersGeoJSON}>
+        <GeoJSONSource id="shelters" data={sheltersGeoJSON} onPress={handleShelterPress}>
           <Layer
             id="shelter-bg"
             type="circle"
@@ -849,28 +883,45 @@ export default function MapScreen() {
             shadowOffset: { width: 0, height: 2 },
           }}
         >
-          <Text style={{ fontSize: 13, fontWeight: '700', color: '#991B1B', marginBottom: 8 }}>
-            🤖 AI dự đoán {predictedDrops.length} điểm nguy cơ không kích
-          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+            <MaterialCommunityIcons name="robot-outline" size={18} color="#991B1B" />
+            <Text style={{ fontSize: 13, fontWeight: '700', color: '#991B1B', flex: 1 }}>
+              AI dự đoán {predictedDrops.length} điểm nguy cơ không kích
+            </Text>
+            <Text style={{ fontSize: 10, color: '#9CA3AF' }}>chạm để xem</Text>
+          </View>
           <ScrollView style={{ maxHeight: 180 }} showsVerticalScrollIndicator>
             {predictedDrops.map((p, i) => (
-              <View key={i} style={{ flexDirection: 'row', gap: 8, marginBottom: 8, alignItems: 'flex-start' }}>
+              <TouchableOpacity
+                key={i}
+                onPress={() => handlePredictedPress(p)}
+                activeOpacity={0.6}
+                style={{
+                  flexDirection: 'row',
+                  gap: 8,
+                  marginBottom: 6,
+                  alignItems: 'flex-start',
+                  paddingVertical: 4,
+                }}
+              >
                 <View
                   style={{
-                    width: 22,
-                    height: 22,
-                    borderRadius: 11,
-                    backgroundColor: p.level >= 5 ? '#991B1B' : p.level >= 3 ? '#EF4444' : '#F59E0B',
+                    width: 24,
+                    height: 24,
+                    borderRadius: 12,
+                    backgroundColor:
+                      p.level >= 5 ? '#991B1B' : p.level >= 4 ? '#EF4444' : p.level >= 3 ? '#F97316' : p.level >= 2 ? '#FB923C' : '#CA8A04',
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
                 >
-                  <Text style={{ color: '#FFFFFF', fontSize: 11, fontWeight: '700' }}>{p.level}</Text>
+                  <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>{p.level}</Text>
                 </View>
-                <Text style={{ flex: 1, fontSize: 12, color: '#374151', lineHeight: 16 }}>
+                <Text style={{ flex: 1, fontSize: 12.5, color: '#374151', lineHeight: 17 }}>
                   {p.reason || 'Không có lý do'}
                 </Text>
-              </View>
+                <Ionicons name="chevron-forward" size={16} color="#9CA3AF" style={{ marginTop: 4 }} />
+              </TouchableOpacity>
             ))}
           </ScrollView>
         </View>

@@ -26,10 +26,19 @@ Cho một đường bay (có thể là phương tiện quân sự) và các đi�
 Cơ sở đánh giá rủi ro của mỗi ứng viên:
 - history_count càng cao → khu vực có nhiều sự kiện xung đột lịch sử (dữ liệu ACLED/UCDP) → rủi ro cao hơn.
 - target_dist_m càng nhỏ → càng gần cơ sở trọng yếu (bệnh viện/trường học) → khả năng bị ảnh hưởng/thiệt hại phụ cao hơn.
-- history_events: danh sách mô tả các sự kiện lịch sử THẬT gần điểm đó (loại sự kiện + mô tả). HÃY dựa vào nội dung này để đánh giá và TRÍCH DẪN sự kiện cụ thể trong phần "reason" (vd loại không kích/pháo kích/giao tranh đã từng xảy ra).
+- history_events: danh sách mô tả các sự kiện lịch sử THẬT gần điểm đó (loại sự kiện + mô tả). Dựa vào nội dung này để đánh giá.
 - Ưu tiên các điểm tách biệt nhau; tránh chọn nhiều điểm sát nhau.
 
-Chọn tối đa N điểm rủi ro cao nhất từ danh sách (qua trường "index"), gán danger_level 1–5 và một lý do ngắn gọn bằng tiếng Việt, ưu tiên nêu bằng chứng từ history_events. CHỈ trả kết quả qua công cụ report_airstrike_risk.`;
+Chọn tối đa N điểm rủi ro cao nhất từ danh sách (qua trường "index"), gán danger_level 1–5.
+
+QUAN TRỌNG về phần "reason" — viết cho NGƯỜI DÂN BÌNH THƯỜNG đọc, không phải kỹ sư:
+- Tiếng Việt đơn giản, thân thiện, 1 câu ngắn (≤90 ký tự).
+- KHÔNG dùng thuật ngữ kỹ thuật, KHÔNG nêu số liệu thô (đừng ghi "history_count", "target_dist_m", "score", toạ độ).
+- Nói rõ MỐI NGUY + LỜI KHUYÊN ngắn. Ví dụ tốt:
+  • "Khu vực từng bị không kích nhiều lần, rất nguy hiểm — nên tránh xa."
+  • "Gần trường học/bệnh viện và từng có giao tranh — hãy sơ tán sớm."
+  • "Đã có pháo kích gần đây — không nên đi qua khu này."
+CHỈ trả kết quả qua công cụ report_airstrike_risk.`;
 
 @Injectable()
 export class AirstrikeAiService {
@@ -86,11 +95,13 @@ export class AirstrikeAiService {
                 },
                 danger_level: {
                   type: 'integer',
-                  description: 'Mức nguy hiểm dự đoán: 1 (thấp) đến 5 (rất cao)',
+                  description:
+                    'Mức nguy hiểm dự đoán: 1 (thấp) đến 5 (rất cao)',
                 },
                 reason: {
                   type: 'string',
-                  description: 'Lý do ngắn gọn bằng tiếng Việt (≤140 ký tự)',
+                  description:
+                    'Lời cảnh báo dễ hiểu cho người dân (tiếng Việt, ≤90 ký tự, không thuật ngữ/số liệu, nêu nguy hiểm + khuyên tránh)',
                 },
               },
               required: ['index', 'danger_level', 'reason'],
