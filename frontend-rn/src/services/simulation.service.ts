@@ -6,6 +6,7 @@ export interface PredictedDrop {
   lat: number;
   score: number;
   level: number;
+  reason: string | null;
   targetDistM: number;
   historyCount: number;
 }
@@ -16,6 +17,7 @@ export interface SimZone {
   lng: number;
   lat: number;
   level: number;
+  reason: string | null;
   geojson: any; // GeoJSON Polygon
 }
 
@@ -42,6 +44,7 @@ export async function simulateAirstrike(
       lat: Number(p.lat),
       score: Number(p.score ?? 0),
       level: Number(p.level ?? 0),
+      reason: p.reason ?? null,
       targetDistM: Number(p.targetDistM ?? 0),
       historyCount: Number(p.historyCount ?? 0),
     })),
@@ -51,6 +54,7 @@ export async function simulateAirstrike(
       lng: Number(z.lng),
       lat: Number(z.lat),
       level: Number(z.level ?? 0),
+      reason: z.reason ?? null,
       geojson: z.geojson,
     })),
   };

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useMemo, useCallback, useState } from 'react';
-import { View, Text, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, Alert, Platform, ToastAndroid, ScrollView } from 'react-native';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/lib/theme-context';
@@ -8,6 +8,7 @@ import { useAuthStore } from '@/store/auth.store';
 import { SocketService, type DangerZoneAlert } from '@/services/socket.service';
 import { getCurrentPosition, watchPosition } from '@/services/location.service';
 import { startBackgroundLocationTracking } from '@/services/background-location.service';
+import { speak } from '@/services/speech.service';
 import {
   setupNotificationHandler,
   requestNotificationPermission,
@@ -56,6 +57,9 @@ interface Bounds {
   maxLat: number;
   maxLng: number;
 }
+
+// Khoảng cách tới shelter để tự thông báo + check-in (chặt hơn ARRIVAL_RADIUS_M=50 của routing)
+const ARRIVAL_CHECKIN_M = 10;
 
 // Bbox vuông quanh 1 điểm (mặc định ~±0.08° ≈ 9km) — dùng khi chưa có viewport thật
 function boundsAround(loc: LngLat, d = 0.08): Bounds {
@@ -156,6 +160,7 @@ export default function MapScreen() {
   const pushTokenRef = useRef<string | null>(null);
   const lastNotifRef = useRef<number>(0);
   const lastBoundsRef = useRef<Bounds | null>(null);
+  const arrivalHandledRef = useRef<string | null>(null);
 
   const [currentAlert, setCurrentAlert] = useState<DangerZoneAlert | null>(null);
   const [simPath, setSimPath] = useState<LngLat[] | null>(null);
@@ -384,6 +389,34 @@ export default function MapScreen() {
       refresh && clearInterval(refresh);
     };
   }, []);
+
+  // Tới nơi trú ẩn (≤10m): luôn thông báo "đã tới [tên]" + đọc TTS.
+  // Nếu đã đăng nhập và chưa check-in ở đó → tự động check-in (không cần thủ công).
+  // Dùng khoảng cách thực ≤10m (chặt hơn hasArrived=50m vốn dùng cho việc dừng định tuyến).
+  useEffect(() => {
+    if (!selectedShelter) return;
+    const distM = haversineMeters(userLocation, [selectedShelter.lng, selectedShelter.lat]);
+    if (distM > ARRIVAL_CHECKIN_M) return;
+    if (arrivalHandledRef.current === selectedShelter.id) return; // đã xử lý shelter này
+    arrivalHandledRef.current = selectedShelter.id;
+
+    const name = selectedShelter.name || 'nơi trú ẩn';
+    if (Platform.OS === 'android') ToastAndroid.show(`Đã tới ${name}`, ToastAndroid.LONG);
+    speak(`Đã tới nơi trú ẩn ${name}`);
+
+    const loggedIn = !!useAuthStore.getState().user;
+    const alreadyHere = useMapStore.getState().activeCheckinShelterId === selectedShelter.id;
+    if (loggedIn && !alreadyHere) {
+      void (async () => {
+        const ok = await useMapStore.getState().checkin(selectedShelter.id);
+        if (ok) {
+          if (Platform.OS === 'android')
+            ToastAndroid.show('Đã check-in thành công', ToastAndroid.LONG);
+          speak('Bạn đã check-in thành công');
+        }
+      })();
+    }
+  }, [userLocation, selectedShelter]);
 
   const dangerZonesGeoJSON = useMemo<FeatureCollection>(
     () => ({
@@ -795,6 +828,53 @@ export default function MapScreen() {
           {isSimulating ? 'Đang chạy...' : simPath ? 'Xoá' : 'Không kích'}
         </Text>
       </TouchableOpacity>
+
+      {/* Panel hiển thị dự đoán AI (lý do từng điểm không kích) */}
+      {simPath && predictedDrops.length > 0 && (
+        <View
+          style={{
+            position: 'absolute',
+            top: 114,
+            left: 12,
+            right: 12,
+            maxHeight: 220,
+            backgroundColor: 'rgba(255,255,255,0.96)',
+            borderRadius: 12,
+            padding: 12,
+            zIndex: 9,
+            elevation: 4,
+            shadowColor: '#000',
+            shadowOpacity: 0.15,
+            shadowRadius: 4,
+            shadowOffset: { width: 0, height: 2 },
+          }}
+        >
+          <Text style={{ fontSize: 13, fontWeight: '700', color: '#991B1B', marginBottom: 8 }}>
+            🤖 AI dự đoán {predictedDrops.length} điểm nguy cơ không kích
+          </Text>
+          <ScrollView style={{ maxHeight: 180 }} showsVerticalScrollIndicator>
+            {predictedDrops.map((p, i) => (
+              <View key={i} style={{ flexDirection: 'row', gap: 8, marginBottom: 8, alignItems: 'flex-start' }}>
+                <View
+                  style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: 11,
+                    backgroundColor: p.level >= 5 ? '#991B1B' : p.level >= 3 ? '#EF4444' : '#F59E0B',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Text style={{ color: '#FFFFFF', fontSize: 11, fontWeight: '700' }}>{p.level}</Text>
+                </View>
+                <Text style={{ flex: 1, fontSize: 12, color: '#374151', lineHeight: 16 }}>
+                  {p.reason || 'Không có lý do'}
+                </Text>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       <BottomCard
         selectedShelter={selectedShelter}

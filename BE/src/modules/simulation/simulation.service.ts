@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { EventsGateway } from '../events/events.gateway';
+import { AirstrikeAiService } from './airstrike-ai.service';
 
 interface Candidate {
   lng: number;
@@ -12,6 +13,9 @@ interface Candidate {
   targetDist: number; // mét đến mục tiêu trọng yếu gần nhất
   histCount: number; // số vùng nguy hiểm lịch sử quanh điểm
   score: number;
+  histSamples?: string[]; // mô tả sự kiện lịch sử thật gần điểm (RAG Câu A)
+  level?: number; // mức nguy hiểm do AI gán (nếu có)
+  reason?: string; // lý do do AI giải thích (nếu có)
 }
 
 const SEGMENT_M = 700; // khoảng cách lấy mẫu dọc đường bay
@@ -33,6 +37,7 @@ export class SimulationService {
   constructor(
     private dataSource: DataSource,
     private eventsGateway: EventsGateway,
+    private aiService: AirstrikeAiService,
   ) {}
 
   // Gỡ sim_penalty của mọi đường nằm dưới vùng sim đang active về 0.
@@ -115,7 +120,23 @@ export class SimulationService {
            SELECT COUNT(*) FROM danger_zones dz
            WHERE dz.is_active = TRUE AND dz.data_source <> 'simulation'
              AND dz.geom && ST_Expand(pt, $3)
-         ) AS hist_count
+         ) AS hist_count,
+         -- RAG (Câu A): lấy tối đa 3 mô tả sự kiện lịch sử THẬT (ACLED/UCDP) gần điểm,
+         -- để Claude grounding + trích dẫn thay vì suy luận từ con số.
+         (
+           SELECT array_agg(lbl) FROM (
+             SELECT (
+               COALESCE(dz.event_type, dz.name, '')
+               || CASE WHEN dz.description IS NOT NULL AND dz.description <> ''
+                       THEN ' — ' || left(dz.description, 120) ELSE '' END
+             ) AS lbl
+             FROM danger_zones dz
+             WHERE dz.is_active = TRUE AND dz.data_source <> 'simulation'
+               AND dz.geom && ST_Expand(pt, $3)
+             ORDER BY dz.danger_level DESC NULLS LAST, dz.created_at DESC
+             LIMIT 3
+           ) s
+         ) AS hist_samples
        FROM cand`,
       [wkt, SEGMENT_M, HISTORY_RADIUS_DEG],
     );
@@ -124,40 +145,78 @@ export class SimulationService {
       throw new BadRequestException('Không sinh được điểm ứng viên từ đường bay');
     }
 
-    // 3) Chấm điểm: lịch sử + gần mục tiêu + ngẫu nhiên (gần trục đường bay là
-    //    hiển nhiên vì ứng viên nằm trên đường bay).
-    const candidates: Candidate[] = rows.map((r: any) => {
-      const targetDist = parseFloat(r.target_dist);
-      const histCount = parseInt(r.hist_count, 10);
-      const targetProximity = 1 / (1 + targetDist / 1000); // 0..1, càng gần càng cao
-      const histNorm = Math.min(1, histCount / 5);
-      const score =
-        0.45 * histNorm + 0.4 * targetProximity + 0.15 * Math.random();
-      return {
-        lng: parseFloat(r.lng),
-        lat: parseFloat(r.lat),
-        targetDist,
-        histCount,
-        score,
-      };
-    });
+    const candidates: Candidate[] = rows.map((r: any) => ({
+      lng: parseFloat(r.lng),
+      lat: parseFloat(r.lat),
+      targetDist: parseFloat(r.target_dist),
+      histCount: parseInt(r.hist_count, 10),
+      histSamples: Array.isArray(r.hist_samples)
+        ? r.hist_samples.filter(Boolean)
+        : [],
+      score: 0,
+    }));
 
-    // 4) Chọn top-N theo điểm, đảm bảo giãn cách tối thiểu để các vùng không chồng
-    candidates.sort((a, b) => b.score - a.score);
     const chosen: Candidate[] = [];
-    for (const c of candidates) {
-      if (chosen.length >= count) break;
-      const tooClose = chosen.some(
-        (p) => this.haversineM([p.lng, p.lat], [c.lng, c.lat]) < MIN_SPACING_M,
-      );
-      if (!tooClose) chosen.push(c);
+
+    // 3+4a) ƯU TIÊN AI (Claude): chọn điểm + gán mức nguy hiểm + lý do.
+    const aiPredictions = await this.aiService.predict(
+      candidates.map((c) => ({
+        lng: c.lng,
+        lat: c.lat,
+        targetDistM: c.targetDist,
+        histCount: c.histCount,
+        historyEvents: c.histSamples ?? [],
+      })),
+      count,
+    );
+    if (aiPredictions?.length) {
+      for (const p of aiPredictions) {
+        if (chosen.length >= count) break;
+        const tooClose = chosen.some(
+          (q) =>
+            this.haversineM([q.lng, q.lat], [p.lng, p.lat]) < MIN_SPACING_M,
+        );
+        if (tooClose) continue;
+        chosen.push({
+          lng: p.lng,
+          lat: p.lat,
+          targetDist: p.targetDistM,
+          histCount: p.histCount,
+          score: p.level / 5,
+          level: p.level,
+          reason: p.reason,
+        });
+      }
     }
 
-    // 5) Tạo vùng dự đoán (airstrike) — cấp nguy hiểm theo score (AI quyết)
+    // 3+4b) FALLBACK heuristic khi AI không khả dụng/không trả kết quả:
+    //       chấm điểm = lịch sử + gần mục tiêu + nhiễu, rồi chọn top-N giãn cách.
+    if (!chosen.length) {
+      for (const c of candidates) {
+        const targetProximity = 1 / (1 + c.targetDist / 1000); // 0..1
+        const histNorm = Math.min(1, c.histCount / 5);
+        c.score =
+          0.45 * histNorm + 0.4 * targetProximity + 0.15 * Math.random();
+      }
+      candidates.sort((a, b) => b.score - a.score);
+      for (const c of candidates) {
+        if (chosen.length >= count) break;
+        const tooClose = chosen.some(
+          (p) =>
+            this.haversineM([p.lng, p.lat], [c.lng, c.lat]) < MIN_SPACING_M,
+        );
+        if (!tooClose) chosen.push(c);
+      }
+    }
+
+    // 5) Tạo vùng dự đoán (airstrike) — cấp nguy hiểm do AI gán, hoặc suy từ score (heuristic)
     const zones: any[] = [];
     for (let i = 0; i < chosen.length; i++) {
       const c = chosen[i];
-      const level = scoreToLevel(c.score);
+      const level = c.level ?? scoreToLevel(c.score);
+      const detail = c.reason
+        ? `AI: ${c.reason}`
+        : `Heuristic: score=${c.score.toFixed(2)}, cấp ${level}`;
       const name = `[SIM] Dự đoán không kích #${i + 1}`;
       const [zone] = await this.dataSource.query(
         `INSERT INTO danger_zones (
@@ -175,10 +234,17 @@ export class SimulationService {
           c.lat,
           AIRSTRIKE_BUFFER_M,
           level,
-          `Mô phỏng: dự đoán điểm thả bom (score=${c.score.toFixed(2)}, cấp ${level})`,
+          detail,
         ],
       );
-      zones.push({ ...zone, lng: c.lng, lat: c.lat, score: c.score, level });
+      zones.push({
+        ...zone,
+        lng: c.lng,
+        lat: c.lat,
+        score: c.score,
+        level,
+        reason: c.reason ?? null,
+      });
     }
 
     // 6) Gán sim_penalty (KHÔNG động danger_penalty) cho các đường giao vùng sim.
@@ -210,7 +276,8 @@ export class SimulationService {
         lng: c.lng,
         lat: c.lat,
         score: Math.round(c.score * 100) / 100,
-        level: scoreToLevel(c.score),
+        level: c.level ?? scoreToLevel(c.score),
+        reason: c.reason ?? null,
         targetDistM: Math.round(c.targetDist),
         historyCount: c.histCount,
       })),
